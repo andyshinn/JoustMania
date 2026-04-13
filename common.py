@@ -200,4 +200,10 @@ REQUIRED_SETTINGS = [
     'menu_voice',
     'random_team_size',
     'force_all_start',
+    'wled_enabled',
+    'wled_host',
+    'wled_brightness',
+    'wled_strip_length',
+    'wled_track_music_speed',
+    'wled_events',
 ]

@@ -44,12 +44,12 @@ OVERDRIVE_COLORS = [colors.Colors.Orange, colors.Colors.Purple]
 CURRENT_COMMANDER_COLORS = [colors.Colors.Magenta, colors.Colors.Green]
 
 class Joust(Game):
-    def __init__(self, moves, command_queue, ns, red_on_kill, music, teams, game_mode, controller_teams, controller_colors, dead_moves, invincible_moves, force_move_colors, music_speed, show_team_colors, restart, revive, opts):
+    def __init__(self, moves, command_queue, ns, red_on_kill, music, teams, game_mode, controller_teams, controller_colors, dead_moves, invincible_moves, force_move_colors, music_speed, show_team_colors, restart, revive, opts, wled=None):
         super().__init__(
             moves=moves, command_queue=command_queue, ns=ns, red_on_kill=red_on_kill, music=music, teams=teams, game_mode=game_mode, \
             controller_teams=controller_teams, controller_colors=controller_colors, dead_moves=dead_moves, invincible_moves=invincible_moves, \
             force_move_colors=force_move_colors, music_speed=music_speed, show_team_colors=show_team_colors, \
-            restart=restart, revive=revive, opts=opts)
+            restart=restart, revive=revive, opts=opts, wled=wled)
 
         self.current_commander = [None] * 2
         self.time_to_power = [20, 20]
@@ -206,6 +206,7 @@ class Joust(Game):
                     self.overdrive_status[team] = Overdrive.READY.value
                     self.opts[self.current_commander[team]][Opts.OVERDRIVE.value] = Overdrive.READY.value
                     self.power_ready_sfx.start_effect()
+                    self._wled_player_event('commander_overdrive_ready', self.current_commander[team])
 
                     # Avoid double playing sound effects on first charge
                     if self.first_charge and team == Team.ALPHA.value:
@@ -233,6 +234,7 @@ class Joust(Game):
             if self.teams[move_serial] == team:
                 logger.debug("Activating overdrive for: {}".format(move_serial))
                 self.opts[move_serial][Opts.OVERDRIVE.value] = Overdrive.ACTIVE.value
+                self._wled_player_event('commander_overdrive_active', move_serial)
 
         self.overdrive_status[team] = Overdrive.ACTIVE.value
         self.overdrive_end_time[team] = time.time() + self.overdrive_duration

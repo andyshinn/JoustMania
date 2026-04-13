@@ -21,6 +21,7 @@ elif "win" in platform:
     import win_pair as pair
 import controller_process
 import update
+import wled_controller
 
 # find .env file in parent directory
 env_file = find_dotenv()
@@ -373,6 +374,13 @@ class Menu():
         self.commander_music = Music("commander")
         self.choose_new_music()
 
+        # Spawn WLED worker subprocess (no-op client if disabled in settings)
+        self.wled = wled_controller.make_client(self.ns.settings)
+        self.wled.event('system_boot')
+        self._last_pairing_signal = 0
+        self._sent_menu_idle = False
+        self._last_move_count = self.move_count
+
     def choose_new_music(self):
         self.joust_music.load_audio("audio/Joust/music/*")
         self.zombie_music.load_audio("audio/Zombie/music/*")
@@ -387,9 +395,14 @@ class Menu():
             self.moves = [psmove.PSMove(x) for x in range(psmove.count_connected())]
             if self.move_count > len(self.moves):
                 logger.debug("Move disconnected")
+                self.wled.event('controller_disconnected')
             else:
                 logger.debug("Move connected")
+                self.wled.event('controller_connected')
             self.move_count = self.get_move_count()
+            if self.move_count != self._last_move_count and self.menu.value == 1:
+                self.wled.event('lobby_players_joining')
+                self._last_move_count = self.move_count
 
     # Turn on bluetooth scanning
     def enable_bt_scanning(self, on=True):
@@ -422,6 +435,7 @@ class Menu():
             if move.connection_type == psmove.Conn_USB:
                 if move_serial not in self.paired_moves:
                     logger.debug("Pairing USB move: {}".format(move_serial))
+                    self.wled.event('pairing')
                     self.pair.pair_move(move)
                     move.set_leds(255,255,255)
                     move.update_leds()
@@ -433,6 +447,7 @@ class Menu():
         #If move is not already being tracked
         if move_serial not in self.tracked_moves:
             logger.debug("Pairing BT move: {}".format(move_serial))
+            self.wled.event('pairing')
             color = Array('i', [0] * 3)
             # TODO: this probably should be tracked above
             # Individual move run-time parameters, initialize them all to 0
@@ -636,6 +651,7 @@ class Menu():
         for move, move_opt in self.menu_opts.items():
             if move_opt[Opts.SELECTION.value] == Selections.update.value:
                 if self.big_update:
+                    self.wled.event('update_in_progress')
                     update.big_update(self.ns.settings['menu_voice'])
                     self.big_update = False
 
@@ -648,6 +664,7 @@ class Menu():
                 logger.debug("Move charging: {}".format(serial))
                 self.out_moves[serial] = Status.DEAD.value # If move is charging, set it to dead
                 move_opt[Opts.STATUS.value] = Status.DEAD.value # If move is charging, set it to dead
+                self.wled.event('controller_charging')
             elif move_opt[Opts.CHARGING.value] == False and self.out_moves[serial] == Status.DEAD.value:
                 logger.debug("Move no longer charging: {}".format(serial))
                 self.out_moves[serial] = Status.ALIVE.value # If move is not charging, set it to alive
@@ -661,6 +678,7 @@ class Menu():
                 self.play_menu_music = False
                 self.menu_music.load_audio("audio/Menu/music/*")
                 self.menu_music.start_audio_loop()
+                self.wled.event('menu_idle')
             self.i = self.i + 1 # Track loop counter
             if psmove.count_connected() > len(self.tracked_moves):
                 for move_num, move in enumerate(self.moves):
@@ -727,6 +745,7 @@ class Menu():
 
             if admin_opt[Opts.SELECTION.value] == Selections.FORCE_START_GAME.value:
                 admin_opt[Opts.RANDOM_START.value] = Status.DEAD.value
+                self.wled.event('force_start_game')
                 self.start_game()
                 return;
 
@@ -848,7 +867,52 @@ class Menu():
                 2: ['Magenta','Green'],
                 3: ['Orange','Turquoise','Purple'],
                 4: ['Yellow','Green','Blue','Purple']
-            }
+            },
+            'wled_enabled': False,
+            'wled_host': '4.3.2.1',
+            'wled_brightness': 180,
+            'wled_strip_length': 300,
+            'wled_track_music_speed': True,
+            'wled_events': {
+                'system_boot':       {'preset': 1},
+                'system_shutdown':   {'color': '#000000', 'effect': 'Fade'},
+                'menu_idle':         {'effect': 'Breathe', 'color': '#202020'},
+                'pairing':           {'color': '#0080ff', 'effect': 'Chase'},
+                'controller_connected': {'color': '#00ff00', 'effect': 'Blink', 'duration_ms': 500},
+                'lobby_players_joining': {'color': '#ffff00', 'effect': 'Breathe'},
+                'start_game_pending':{'color': '#ffffff', 'effect': 'Blink', 'duration_ms': 800},
+                'force_start_game':  {'color': '#ff8800', 'effect': 'Strobe', 'duration_ms': 1500},
+                'admin_mode_active': {'color': '#ff0000', 'effect': 'Breathe'},
+                'low_battery_warning': {'color': '#ff0000', 'effect': 'Blink', 'duration_ms': 1000},
+                'update_available':  {'color': '#00ffff', 'effect': 'Breathe'},
+                'update_in_progress':{'color': '#ffffff', 'effect': 'Wipe'},
+                'countdown':         {'color': '#ff0000', 'effect': 'Blink', 'speed': 200},
+                'in_game':           {'effect': 'Breathe', 'palette': '$player_segments'},
+                'ending':            {'color': '$winning_team', 'effect': 'Colorloop'},
+                'killed':            {'color': '#ff0000', 'effect': 'Strobe'},
+                'kill':              {'color': '#ff0000', 'effect': 'Strobe', 'duration_ms': 300},
+                'revive':            {'color': '$player_color', 'effect': 'Blink', 'duration_ms': 500},
+                'last_man_standing': {'color': '$player_color', 'effect': 'Pulse'},
+                'werewolf_warn_30':  {'color': '#0000ff', 'effect': 'Breathe'},
+                'werewolf_warn_10':  {'color': '#0000ff', 'effect': 'Blink', 'speed': 200},
+                'werewolf_revealed': {'color': '#0000ff', 'effect': 'Strobe', 'duration_ms': 2000},
+                'zombie_warn_3min':  {'color': '#80ff00', 'effect': 'Breathe'},
+                'zombie_warn_1min':  {'color': '#80ff00', 'effect': 'Blink'},
+                'zombie_warn_30':    {'color': '#80ff00', 'effect': 'Blink', 'speed': 200},
+                'zombie_warn_10':    {'color': '#80ff00', 'effect': 'Strobe'},
+                'zombie_human_win':  {'color': '#ffffff', 'effect': 'Colorloop'},
+                'zombie_zombie_win': {'color': '#80ff00', 'effect': 'Colorloop'},
+                'commander_overdrive_ready': {'color': '$player_color', 'effect': 'Pulse'},
+                'commander_overdrive_active':{'color': '$player_color', 'effect': 'Strobe', 'duration_ms': 5000},
+                'traitor_reveal':    {'color': '#ff0000', 'effect': 'Strobe', 'duration_ms': 1000},
+                'bomb_holder':       {'color': '#ff8000', 'effect': 'Pulse'},
+                'bomb_fake':         {'color': '#ffff00', 'effect': 'Blink', 'duration_ms': 400},
+                'fight_round_warn':  {'color': '#ffffff', 'effect': 'Blink', 'duration_ms': 200},
+                'fight_face_off':    {'color': '#ff00ff', 'effect': 'Strobe'},
+                'tournament_invincible': {'color': '$player_color', 'effect': 'Blink', 'duration_ms': 4000},
+                'nonstop_warn_60':   {'color': '#00ffff', 'effect': 'Breathe'},
+                'nonstop_warn_30':   {'color': '#00ffff', 'effect': 'Blink'},
+            },
         })
         try:
             #if anything fails during the settings file load, ignore file and stick with defaults
@@ -952,6 +1016,7 @@ class Menu():
                 start_game = False
             if self.menu_opts[serial][Opts.RANDOM_START.value] and serial not in self.random_added:
                 self.random_added.append(serial)
+                self.wled.event('start_game_pending')
                 if self.ns.settings['play_audio']:
                     Audio('audio/Joust/sounds/start.wav').start_effect()
 
@@ -1091,7 +1156,7 @@ class Menu():
                                 controller_teams=self.controller_teams, controller_colors=self.controller_colors, \
                                 dead_moves=self.dead_moves, invincible_moves=self.invincible_moves, force_move_colors=self.force_color, \
                                 music_speed=self.music_speed, show_team_colors=self.show_team_colors, restart=self.restart, \
-                                revive=self.revive)
+                                revive=self.revive, wled=self.wled)
         # Joust Teams
         elif self.game_mode == Games.JoustTeams:
             joust_teams.Joust(moves=game_moves, command_queue=self.command_queue, ns=self.ns, red_on_kill=self.red_on_kill, \
@@ -1099,7 +1164,7 @@ class Menu():
                               controller_teams=self.controller_teams, controller_colors=self.controller_colors, \
                               dead_moves=self.dead_moves, invincible_moves=self.invincible_moves, force_move_colors=self.force_color, \
                               music_speed=self.music_speed, show_team_colors=self.show_team_colors, restart=self.restart, \
-                              revive=self.revive)
+                              revive=self.revive, wled=self.wled)
         # Joust Random Teams
         elif self.game_mode == Games.JoustRandomTeams:
             joust_random_teams.Joust(moves=game_moves, command_queue=self.command_queue, ns=self.ns, red_on_kill=self.red_on_kill, \
@@ -1107,7 +1172,7 @@ class Menu():
                                      controller_teams=self.controller_teams, controller_colors=self.controller_colors, \
                                      dead_moves=self.dead_moves, invincible_moves=self.invincible_moves, force_move_colors=self.force_color, \
                                      music_speed=self.music_speed, show_team_colors=self.show_team_colors, restart=self.restart, \
-                                     revive=self.revive)
+                                     revive=self.revive, wled=self.wled)
         # Traitors
         elif self.game_mode == Games.Traitor:
             traitor.Joust(moves=game_moves, command_queue=self.command_queue, ns=self.ns, red_on_kill=self.red_on_kill, \
@@ -1167,7 +1232,7 @@ class Menu():
                              controller_teams=self.controller_teams, controller_colors=self.controller_colors, \
                              dead_moves=self.dead_moves, invincible_moves=self.invincible_moves, force_move_colors=self.force_color, \
                              music_speed=self.music_speed, show_team_colors=self.show_team_colors, restart=self.restart, \
-                             revive=self.revive)
+                             revive=self.revive, wled=self.wled)
         # Non-stop Joust
         elif self.game_mode == Games.NonStop:
             joust_non_stop.Joust(moves=game_moves, command_queue=self.command_queue, ns=self.ns, red_on_kill=self.red_on_kill, \
@@ -1192,6 +1257,9 @@ class Menu():
                     Audio('audio/Menu/vox/' + self.ns.settings['menu_voice'] + '/tradeoff2.wav').start_effect_and_wait()
 
         self.play_menu_music = True
+        # Reset WLED back to idle/menu state after the game ends.
+        self.wled.tear_segments()
+        self.wled.event('menu_idle')
         #reset music
         self.choose_new_music()
         #turn off admin mode so someone can't accidentally press a button

@@ -5,12 +5,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 class Joust(Game):
-    def __init__(self, moves, command_queue, ns, red_on_kill, music, teams, game_mode, controller_teams, controller_colors, dead_moves, invincible_moves, force_move_colors, music_speed, show_team_colors, restart, revive):
+    def __init__(self, moves, command_queue, ns, red_on_kill, music, teams, game_mode, controller_teams, controller_colors, dead_moves, invincible_moves, force_move_colors, music_speed, show_team_colors, restart, revive, wled=None):
         super().__init__(
             moves=moves, command_queue=command_queue, ns=ns, red_on_kill=red_on_kill, music=music, teams=teams, game_mode=game_mode, \
             controller_teams=controller_teams, controller_colors=controller_colors, dead_moves=dead_moves, invincible_moves=invincible_moves, \
             force_move_colors=force_move_colors, music_speed=music_speed, show_team_colors=show_team_colors, \
-            restart=restart, revive=revive)
+            restart=restart, revive=revive, wled=wled)
 
         # Only two teams
         self.num_teams = 2
@@ -39,11 +39,16 @@ class Joust(Game):
                 if self.play_audio:
                     self.play_death_sound(move_serial)
                 self.last_move = move_serial
+                self._wled_player_event('kill', move_serial)
+                # Rebuild segments so the strip reflects the new team color.
+                self.wled.build_segments(
+                    [tuple(self.controller_colors[s][:]) for s in self.move_serials])
             elif dead.value == common.Status.REVIVED.value:
                 logger.debug("Move has revived: {}".format(move_serial))
                 dead.value = common.Status.ALIVE.value
                 if self.play_audio:
                     self.revive_sound.start_effect()
+                self._wled_player_event('revive', move_serial)
 
     # @Override
     # Everyone wins except for the last one to die

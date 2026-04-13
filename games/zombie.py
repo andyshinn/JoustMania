@@ -35,12 +35,12 @@ class Joust(Game):
     ZOMBIE_WARNING = [1.2, 1.5, 1.8, 2.6, 2.7]
     ZOMBIE_MAX = [1.4, 1.7, 2.7, 3.1, 3.4]
 
-    def __init__(self, moves, command_queue, ns, red_on_kill, music, teams, game_mode, controller_teams, controller_colors, dead_moves, invincible_moves, force_move_colors, music_speed, show_team_colors, restart, revive, opts):
+    def __init__(self, moves, command_queue, ns, red_on_kill, music, teams, game_mode, controller_teams, controller_colors, dead_moves, invincible_moves, force_move_colors, music_speed, show_team_colors, restart, revive, opts, wled=None):
         super().__init__(
             moves=moves, command_queue=command_queue, ns=ns, red_on_kill=red_on_kill, music=music, teams=teams, game_mode=game_mode, \
             controller_teams=controller_teams, controller_colors=controller_colors, dead_moves=dead_moves, invincible_moves=invincible_moves, \
             force_move_colors=force_move_colors, music_speed=music_speed, show_team_colors=show_team_colors, \
-            restart=restart, revive=revive, opts=opts)
+            restart=restart, revive=revive, opts=opts, wled=wled)
 
         self.humans = []
         self.zombies = {}
@@ -164,15 +164,19 @@ class Joust(Game):
     def check_winner(self):
         if self.win_time - (time.time() - self.start_time) <= 10 and self.effect_cue <= 4:
             self.ten_seconds.start_effect()
+            self.wled.event('zombie_warn_10')
             self.effect_cue = 5
         elif self.win_time - (time.time() - self.start_time) <= 30 and self.effect_cue <= 3:
             self.thirty_seconds.start_effect()
+            self.wled.event('zombie_warn_30')
             self.effect_cue = 4
         elif self.win_time - (time.time() - self.start_time) <= 1*60 and self.effect_cue <= 2:
             self.one_minute.start_effect()
+            self.wled.event('zombie_warn_1min')
             self.effect_cue = 3
         elif self.win_time - (time.time() - self.start_time) <= 3*60 and self.effect_cue <= 1:
             self.three_minutes.start_effect()
+            self.wled.event('zombie_warn_3min')
             self.effect_cue = 2
         # elif self.win_time - (time.time() - self.start_time) <= 5*60 and self.effect_cue <= 0:
         #     self.three_minutes.start_effect()
@@ -192,8 +196,10 @@ class Joust(Game):
     def winning_team_sound(self):
         logger.debug("")
         if self.winning_team == -1:
+            self.wled.event('zombie_zombie_win')
             Audio('audio/Zombie/vox/' + self.voice + '/zombie_victory.wav').start_effect()
         else:
+            self.wled.event('zombie_human_win')
             Audio('audio/Zombie/vox/' + self.voice + '/human_victory.wav').start_effect()
 
     '''

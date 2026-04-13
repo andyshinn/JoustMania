@@ -20,12 +20,12 @@ class Team(Enum):
     FACE_OFF = 3
 
 class Joust(Game):
-    def __init__(self, moves, command_queue, ns, red_on_kill, music, teams, game_mode, controller_teams, controller_colors, dead_moves, invincible_moves, force_move_colors, music_speed, show_team_colors, restart, revive, opts):
+    def __init__(self, moves, command_queue, ns, red_on_kill, music, teams, game_mode, controller_teams, controller_colors, dead_moves, invincible_moves, force_move_colors, music_speed, show_team_colors, restart, revive, opts, wled=None):
         super().__init__(
             moves=moves, command_queue=command_queue, ns=ns, red_on_kill=red_on_kill, music=music, teams=teams, game_mode=game_mode, \
             controller_teams=controller_teams, controller_colors=controller_colors, dead_moves=dead_moves, invincible_moves=invincible_moves, \
             force_move_colors=force_move_colors, music_speed=music_speed, show_team_colors=show_team_colors, \
-            restart=restart, revive=revive, opts=opts)
+            restart=restart, revive=revive, opts=opts, wled=wled)
 
         self.audio_cue = 0
         self.num_dead = 0
@@ -129,6 +129,7 @@ class Joust(Game):
             # If round is almost over, play X warning beeps
             if time.time() > self.round_time - (3 * (self.timer_beep/4)):
                 self.loud_beep.start_effect()
+                self.wled.event('fight_round_warn')
                 self.timer_beep -= 1
 
         if time.time() > self.round_time:
@@ -222,6 +223,7 @@ class Joust(Game):
 
     # If two players are tied, have them face off to decide victor
     def face_off(self):
+        self.wled.event('fight_face_off')
         Audio('audio/Fight_Club/vox/' + self.voice + '/tie_game.wav').start_effect()
         logging.debug("Face off!")
         for move in self.move_serials:

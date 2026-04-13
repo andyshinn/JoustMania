@@ -13,12 +13,12 @@ class Joust(Game):
     WERE_FAST_WARNING = [1.4, 1.7, 2.0, 2.8, 3.5]
     WERE_FAST_MAX = [1.6, 1.9, 2.9, 3.3, 4.9]
 
-    def __init__(self, moves, command_queue, ns, red_on_kill, music, teams, game_mode, controller_teams, controller_colors, dead_moves, invincible_moves, force_move_colors, music_speed, show_team_colors, restart, revive):
+    def __init__(self, moves, command_queue, ns, red_on_kill, music, teams, game_mode, controller_teams, controller_colors, dead_moves, invincible_moves, force_move_colors, music_speed, show_team_colors, restart, revive, wled=None):
         super().__init__(
             moves=moves, command_queue=command_queue, ns=ns, red_on_kill=red_on_kill, music=music, teams=teams, game_mode=game_mode, \
             controller_teams=controller_teams, controller_colors=controller_colors, dead_moves=dead_moves, invincible_moves=invincible_moves, \
             force_move_colors=force_move_colors, music_speed=music_speed, show_team_colors=show_team_colors, \
-            restart=restart, revive=revive)
+            restart=restart, revive=revive, wled=wled)
 
         self.num_teams = 1
         self.generate_teams(num_teams=self.num_teams, num_moves=len(self.moves), team_colors=[colors.Colors.Yellow])
@@ -105,9 +105,11 @@ class Joust(Game):
     def check_winner(self):
         if self.werewolf_timer - (time.time() - self.start_timer) <= 30 and self.audio_cue == 0:
             self.thirty_seconds.start_effect()
+            self.wled.event('werewolf_warn_30')
             self.audio_cue = 1
         if self.werewolf_timer - (time.time() - self.start_timer) <= 10 and self.audio_cue == 1:
             self.ten_seconds.start_effect()
+            self.wled.event('werewolf_warn_10')
             self.audio_cue = 2
         if self.werewolf_timer - (time.time() - self.start_timer) <= 0 and self.audio_cue == 2:
             self.reveal_sound.start_effect()
@@ -116,6 +118,7 @@ class Joust(Game):
             for move_serial in self.werewolf_moves:
                 logger.debug("Revealing werewolf: {}".format(move_serial))
                 colors.change_color(self.controller_colors[move_serial], *colors.Colors.Blue40.value)
+                self._wled_player_event('werewolf_revealed', move_serial)
 
             self.audio_cue = 3
             self.change_time = time.time() - 0.001

@@ -12,12 +12,12 @@ class Opts(Enum):
     DEATHS = 0
 
 class Joust(Game):
-    def __init__(self, moves, command_queue, ns, red_on_kill, music, teams, game_mode, controller_teams, controller_colors, dead_moves, invincible_moves, force_move_colors, music_speed, show_team_colors, restart, revive, opts):
+    def __init__(self, moves, command_queue, ns, red_on_kill, music, teams, game_mode, controller_teams, controller_colors, dead_moves, invincible_moves, force_move_colors, music_speed, show_team_colors, restart, revive, opts, wled=None):
         super().__init__(
             moves=moves, command_queue=command_queue, ns=ns, red_on_kill=red_on_kill, music=music, teams=teams, game_mode=game_mode, \
             controller_teams=controller_teams, controller_colors=controller_colors, dead_moves=dead_moves, invincible_moves=invincible_moves, \
             force_move_colors=force_move_colors, music_speed=music_speed, show_team_colors=show_team_colors, \
-            restart=restart, revive=revive, opts=opts)
+            restart=restart, revive=revive, opts=opts, wled=wled)
 
         # Everyone on their own team
         self.num_teams = len(moves)
@@ -58,9 +58,11 @@ class Joust(Game):
             return True
         elif self.audio_cue == 1 and time.time() > self.non_stop_time - 30:
             self.thirty_seconds.start_effect()
+            self.wled.event('nonstop_warn_30')
             self.audio_cue += 1
         elif self.audio_cue == 0 and time.time() > self.non_stop_time - 60:
             self.one_minute.start_effect()
+            self.wled.event('nonstop_warn_60')
             self.audio_cue += 1
         return False
 

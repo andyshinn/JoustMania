@@ -7,12 +7,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 class Joust(Game):
-    def __init__(self, moves, command_queue, ns, red_on_kill, music, teams, game_mode, controller_teams, controller_colors, dead_moves, invincible_moves, force_move_colors, music_speed, show_team_colors, restart, revive):
+    def __init__(self, moves, command_queue, ns, red_on_kill, music, teams, game_mode, controller_teams, controller_colors, dead_moves, invincible_moves, force_move_colors, music_speed, show_team_colors, restart, revive, wled=None):
         super().__init__(
             moves=moves, command_queue=command_queue, ns=ns, red_on_kill=red_on_kill, music=music, teams=teams, game_mode=game_mode, \
             controller_teams=controller_teams, controller_colors=controller_colors, dead_moves=dead_moves, invincible_moves=invincible_moves, \
             force_move_colors=force_move_colors, music_speed=music_speed, show_team_colors=show_team_colors, \
-            restart=restart, revive=revive)
+            restart=restart, revive=revive, wled=wled)
 
         if len(moves) < 9:
             self.num_teams = 2
@@ -122,6 +122,7 @@ class Joust(Game):
     # Play traitors win if they won
     def winning_team_sound(self):
         if self.winning_team == -1:
+            self.wled.event('traitor_reveal')
             Audio('audio/Joust/vox/' + self.voice + '/traitor win.wav').start_effect_and_wait()
         else:
             super().winning_team_sound()

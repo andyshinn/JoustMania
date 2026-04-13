@@ -2,7 +2,7 @@ from multiprocessing import Queue, Manager, Process
 from time import sleep
 from flask import Flask, render_template, request, redirect, url_for, flash
 from time import sleep
-from wtforms import Form, SelectField, SelectMultipleField, BooleanField, widgets, FieldList
+from wtforms import Form, SelectField, SelectMultipleField, BooleanField, widgets, FieldList, IntegerField, StringField
 from os import system
 import common, colors
 import json
@@ -38,6 +38,13 @@ class SettingsForm(Form):
     random_teams = BooleanField('Randomize teams each round')
     force_all_start = BooleanField('When force starting start with all or only those who pushed trigger')
     random_team_size = SelectField('size of random teams',choices=[(2,'2'),(3,'3'),(4,'4'),(5,'5'),(6,'6')],coerce=int)
+    # WLED LED strip integration. Per-event preset/effect mapping (`wled_events`)
+    # lives in joustsettings.yaml — too many fields to render usefully here.
+    wled_enabled = BooleanField('Enable WLED LED strip')
+    wled_host = StringField('WLED host (IP or mDNS name)')
+    wled_brightness = IntegerField('WLED brightness (0-255)')
+    wled_strip_length = IntegerField('WLED strip length (LED count)')
+    wled_track_music_speed = BooleanField('Track music tempo on segment effect speed')
 
 class WebUI():
     def __init__(self, command_queue=Queue(), ns=None):
@@ -160,7 +167,12 @@ class WebUI():
                 red_on_kill = self.ns.settings['red_on_kill'],
                 random_team_size = self.ns.settings['random_team_size'],
                 force_all_start = self.ns.settings['force_all_start'],
-                color_lock_choices = temp_colors
+                color_lock_choices = temp_colors,
+                wled_enabled = self.ns.settings.get('wled_enabled', False),
+                wled_host = self.ns.settings.get('wled_host', ''),
+                wled_brightness = self.ns.settings.get('wled_brightness', 180),
+                wled_strip_length = self.ns.settings.get('wled_strip_length', 300),
+                wled_track_music_speed = self.ns.settings.get('wled_track_music_speed', True),
             )
             return render_template('settings.html', form=settingsForm, settings=self.ns.settings)
 

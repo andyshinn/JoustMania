@@ -42,7 +42,7 @@ class Game():
     FAST_WARNING = [1.4, 1.6, 1.9, 2.7, 2.8]
     FAST_MAX = [1.6, 1.8, 2.8, 3.2, 3.5]
 
-    def __init__(self, moves, command_queue, ns, red_on_kill, music, teams, game_mode, controller_teams, controller_colors, dead_moves, invincible_moves, force_move_colors, music_speed, show_team_colors, restart, revive, opts=[]):
+    def __init__(self, moves, command_queue, ns, red_on_kill, music, teams, game_mode, controller_teams, controller_colors, dead_moves, invincible_moves, force_move_colors, music_speed, show_team_colors, restart, revive, opts=[], wled=None):
         logger.debug("Initializing {}".format(game_mode.pretty_name))
 
         # TODO - Document these variables
@@ -93,6 +93,12 @@ class Game():
         self.winning_team = None
         self.revive = revive
         self.revive.value = False
+        # Lazy import to keep import graph clean and allow None default.
+        if wled is None:
+            import wled_controller
+            wled = wled_controller.NoopWledClient()
+        self.wled = wled
+        self._last_remaining = None
 
         self.init_audio()
 
@@ -142,6 +148,7 @@ class Game():
 
     #need to do the count_down here
     def count_down(self):
+        self.wled.event('countdown')
         self.change_all_move_colors(80, 0, 0)
         if self.play_audio:
             self.start_beep.start_effect()
@@ -206,12 +213,14 @@ class Game():
         if self.change_time < time.time() < self.change_time + INTERVAL_CHANGE:
             self.change_music_speed(self.speed_up)
             self.currently_changing = True
+            self.wled.tempo(self.music_speed.value)
         elif time.time() >= self.change_time + INTERVAL_CHANGE and self.currently_changing:
             self.music_speed.value = SLOW_MUSIC_SPEED if self.speed_up else FAST_MUSIC_SPEED
             self.speed_up =  not self.speed_up
             self.change_time = self.get_change_time(speed_up = self.speed_up)
             self.audio.change_ratio(self.music_speed.value)
             self.currently_changing = False
+            self.wled.tempo(self.music_speed.value)
 
     def change_all_move_colors(self, r, g, b):
         for color in self.force_move_colors.values():
@@ -225,11 +234,26 @@ class Game():
                 self.num_dead += 1
                 dead.value = Status.DEAD.value
                 self.play_death_sound(move_serial)
+                self._wled_player_event('kill', move_serial)
             elif dead.value == Status.REVIVED.value:
                 logger.debug("Move has revived: {}".format(move_serial))
                 dead.value = Status.ALIVE.value
                 if self.play_audio:
                     self.revive_sound.start_effect()
+                self._wled_player_event('revive', move_serial)
+
+    def _player_index(self, move_serial):
+        try:
+            return self.move_serials.index(move_serial)
+        except ValueError:
+            return -1
+
+    def _wled_player_event(self, name, move_serial):
+        idx = self._player_index(move_serial)
+        if idx < 0:
+            return
+        color = tuple(self.controller_colors[move_serial][:])
+        self.wled.player_event(name, idx, player_color=color)
 
     def play_death_sound(self, move_serial):
         if self.play_audio:
@@ -327,6 +351,14 @@ class Game():
 
         h_value = 0
 
+        # Trigger ending event with the winning team's color (if known).
+        winning_color = None
+        if self.winning_moves:
+            winning_color = tuple(self.controller_colors[self.winning_moves[0]][:])
+        elif self.team_colors and self.winning_team is not None and 0 <= self.winning_team < len(self.team_colors):
+            winning_color = self.team_colors[self.winning_team].value
+        self.wled.event('ending', winning_color=winning_color)
+
         self.all_moves_off()
 
         while (time.time() < end_time):
@@ -352,6 +384,7 @@ class Game():
             self.audio.stop_audio()
         except:
             logger.debug('no audio loaded to stop')
+        self.wled.event('killed')
         self.update_status('killed')
         all_moves = [x for x in self.dead_moves.keys()]
         end_time = time.time() + KILL_GAME_PAUSE
@@ -379,18 +412,31 @@ class Game():
                 self.kill_game()
 
     def update_status(self, game_status, winning_team=-1):
+        remaining = len(self.dead_moves) - len([m for m, s in self.dead_moves.items() if s.value == Status.DEAD.value])
         data = {'game_status': game_status,
                 'game_mode': self.game_mode.pretty_name,
                 'winning_team': winning_team,
                 'total_players': len(self.move_serials),
-                'remaining_players': len(self.dead_moves) -  len([move for move, status in self.dead_moves.items() if status.value == Status.DEAD.value])}
+                'remaining_players': remaining}
 
         self.ns.status = data
+
+        # Fire last-man-standing once when we drop to a single survivor.
+        if game_status == 'in_game' and remaining == 1 and self._last_remaining != 1:
+            for move_serial, dead in self.dead_moves.items():
+                if dead.value != Status.DEAD.value:
+                    self._wled_player_event('last_man_standing', move_serial)
+                    break
+        self._last_remaining = remaining
 
     def before_game_loop(self):
         self.init_moves()
         self.restart.value = 0
         self.change_time = time.time() + 6
+
+        # Partition the LED strip into one segment per player using assigned colors.
+        player_colors = [tuple(self.controller_colors[s][:]) for s in self.move_serials]
+        self.wled.build_segments(player_colors)
 
         time.sleep(0.02)
 

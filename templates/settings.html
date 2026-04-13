@@ -218,6 +218,16 @@ $(document).ready(function(){
             </span>
         </div>
 
+        <div class="settings-section">
+            <h3>WLED LED Strip</h3>
+            <p>{{ form.wled_enabled(checked=settings.wled_enabled) }} {{ form.wled_enabled.label }}</p>
+            <p>{{ form.wled_host.label }}: {{ form.wled_host(value=settings.wled_host or '') }}</p>
+            <p>{{ form.wled_brightness.label }}: {{ form.wled_brightness(value=settings.wled_brightness or 180) }}</p>
+            <p>{{ form.wled_strip_length.label }}: {{ form.wled_strip_length(value=settings.wled_strip_length or 300) }}</p>
+            <p>{{ form.wled_track_music_speed(checked=settings.wled_track_music_speed) }} {{ form.wled_track_music_speed.label }}</p>
+            <p style="font-size:12px;color:#666">Per-event preset/effect mappings live in <code>joustsettings.yaml</code> under <code>wled_events</code>.</p>
+        </div>
+
         <input type="submit" value="Save Settings">
     </form>
     <div class="settings-section">
