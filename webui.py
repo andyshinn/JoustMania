@@ -189,6 +189,9 @@ class WebUI():
                 temp_colors[key] = self.ns.settings['color_lock_choices'][key]
                 colors_are_good = False
 
+        # Drop Nones so blank IntegerField inputs don't clobber saved values.
+        web_settings = {k: v for k, v in web_settings.items() if v is not None}
+
         temp_settings = self.ns.settings
         temp_settings.update(web_settings)
         temp_settings['color_lock_choices'] = temp_colors

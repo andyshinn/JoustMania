@@ -64,6 +64,7 @@ EFFECT_IDS = {
 def make_client(settings):
     """Construct either a real or no-op client based on settings."""
     if not settings.get('wled_enabled'):
+        logger.info("WLED disabled in settings; using NoopWledClient")
         return NoopWledClient()
     cfg = {
         'host': str(settings.get('wled_host', '127.0.0.1')),
@@ -72,6 +73,9 @@ def make_client(settings):
         'track_music_speed': bool(settings.get('wled_track_music_speed', True)),
         'events': dict(settings.get('wled_events', {}) or {}),
     }
+    logger.info("WLED enabled: host=%s brightness=%s strip=%s track_tempo=%s events=%d",
+                cfg['host'], cfg['brightness'], cfg['strip_length'],
+                cfg['track_music_speed'], len(cfg['events']))
     return WledClient(cfg)
 
 
@@ -138,10 +142,24 @@ class WledClient:
 
 
 def _worker_entry(queue, config):
+    # Child process inherits module-level loggers on Linux fork, but we want
+    # to guarantee at least a stderr handler so warnings aren't silently dropped
+    # if the fileConfig handlers don't survive the fork.
+    import sys
+    root = logging.getLogger()
+    if not root.handlers:
+        h = logging.StreamHandler(sys.stderr)
+        h.setFormatter(logging.Formatter(
+            '%(asctime)s - %(levelname)s - %(name)s - %(message)s'))
+        root.addHandler(h)
+        root.setLevel(logging.INFO)
+    logger.info("WLED worker started, target=http://%s/json/state", config['host'])
     try:
         asyncio.run(_worker_loop(queue, config))
     except Exception:
         logger.exception("WLED worker crashed")
+    finally:
+        logger.info("WLED worker exiting")
 
 
 async def _worker_loop(queue, config):
@@ -152,22 +170,35 @@ async def _worker_loop(queue, config):
         'last_tempo_sx': None,
         'cooldown_until': 0.0,
         'session': None,
+        'last_ok': False,
     }
 
     async def post(payload):
         if time.time() < state['cooldown_until']:
+            logger.debug("WLED post skipped (cooldown %.1fs left)",
+                         state['cooldown_until'] - time.time())
             return
         try:
             async with state['session'].post(base_url, json=payload) as resp:
                 if resp.status >= 400:
                     body = await resp.text()
-                    logger.warning("WLED %s: %s", resp.status, body[:200])
+                    logger.warning("WLED %s returned %s: %s",
+                                   base_url, resp.status, body[:200])
+                    state['last_ok'] = False
+                else:
+                    if not state['last_ok']:
+                        logger.info("WLED post OK (%s)", base_url)
+                    state['last_ok'] = True
+                    logger.debug("WLED post %s -> %s", payload, resp.status)
         except Exception as e:
-            logger.warning("WLED unreachable (%s); backing off 5s", e)
+            logger.warning("WLED post to %s failed (%s); backing off 5s",
+                           base_url, e)
             state['cooldown_until'] = time.time() + 5.0
+            state['last_ok'] = False
 
     async with aiohttp.ClientSession(timeout=timeout) as session:
         state['session'] = session
+        logger.info("WLED initial brightness -> %s", config['brightness'])
         await post({'on': True, 'bri': config['brightness']})
 
         while True:
@@ -177,6 +208,7 @@ async def _worker_loop(queue, config):
                 await asyncio.sleep(0.03)
                 continue
             if msg.get('type') == MSG_SHUTDOWN:
+                logger.info("WLED worker received shutdown")
                 await post({'on': False})
                 return
             try:
@@ -192,7 +224,9 @@ async def _handle(msg, state, config, post):
     if t == MSG_GLOBAL_EVENT:
         spec = events.get(msg['name'])
         if not spec:
+            logger.debug("WLED event '%s' has no mapping; skipping", msg['name'])
             return
+        logger.debug("WLED global event '%s' -> %s", msg['name'], spec)
         payload = _spec_to_state(spec, msg.get('kwargs') or {}, state, scope='all')
         if payload:
             await post(payload)
@@ -200,10 +234,14 @@ async def _handle(msg, state, config, post):
     elif t == MSG_PLAYER_EVENT:
         spec = events.get(msg['name'])
         if not spec:
+            logger.debug("WLED player event '%s' has no mapping; skipping", msg['name'])
             return
         idx = msg['player_index']
         if idx < 0 or idx >= len(state['segments']):
+            logger.debug("WLED player event '%s' idx=%s out of range (segs=%d)",
+                         msg['name'], idx, len(state['segments']))
             return
+        logger.debug("WLED player event '%s' idx=%s -> %s", msg['name'], idx, spec)
         payload = _spec_to_state(spec, msg.get('kwargs') or {}, state,
                                  scope='segment', segment_id=idx)
         if payload:
@@ -235,9 +273,11 @@ async def _handle(msg, state, config, post):
             })
         state['segments'] = segs_state
         state['last_tempo_sx'] = None
+        logger.info("WLED build_segments: %d segments across %d LEDs", n, cursor)
         await post({'on': True, 'seg': out_segs})
 
     elif t == MSG_TEAR_SEGMENTS:
+        logger.info("WLED tear_segments")
         state['segments'] = []
         state['last_tempo_sx'] = None
         await post({'on': True, 'seg': [

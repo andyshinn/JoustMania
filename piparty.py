@@ -377,9 +377,36 @@ class Menu():
         # Spawn WLED worker subprocess (no-op client if disabled in settings)
         self.wled = wled_controller.make_client(self.ns.settings)
         self.wled.event('system_boot')
-        self._last_pairing_signal = 0
-        self._sent_menu_idle = False
+        self._wled_snapshot = self._snapshot_wled_settings()
         self._last_move_count = self.move_count
+
+    def _snapshot_wled_settings(self):
+        s = self.ns.settings
+        return (
+            s.get('wled_enabled'),
+            s.get('wled_host'),
+            s.get('wled_brightness'),
+            s.get('wled_strip_length'),
+            s.get('wled_track_music_speed'),
+            repr(s.get('wled_events')),
+        )
+
+    def check_wled_settings_reload(self):
+        """If WLED settings changed via the webui, rebuild the client and refire current state."""
+        if self.menu.value != 1:
+            return  # don't reload mid-game
+        snap = self._snapshot_wled_settings()
+        if snap == self._wled_snapshot:
+            return
+        logger.info("WLED settings changed; old=%s new=%s", self._wled_snapshot, snap)
+        try:
+            self.wled.stop()
+        except Exception:
+            logger.exception("Error stopping old WLED client")
+        self.wled = wled_controller.make_client(self.ns.settings)
+        self._wled_snapshot = snap
+        # Fire current high-level state so the strip reflects reality immediately.
+        self.wled.event('menu_idle')
 
     def choose_new_music(self):
         self.joust_music.load_audio("audio/Joust/music/*")
@@ -720,6 +747,7 @@ class Menu():
                 self.check_update()
                 self.check_charging_controller()
             self.check_command_queue()
+            self.check_wled_settings_reload()
             self.update_status('menu')
 
 
