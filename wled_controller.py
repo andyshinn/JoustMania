@@ -164,6 +164,7 @@ def _worker_entry(queue, config):
 
 async def _worker_loop(queue, config):
     base_url = f"http://{config['host']}/json/state"
+    info_url = f"http://{config['host']}/json/info"
     timeout = aiohttp.ClientTimeout(total=2.0, connect=1.0)
     state = {
         'segments': [],          # list of (start, stop, (r,g,b))
@@ -171,6 +172,12 @@ async def _worker_loop(queue, config):
         'cooldown_until': 0.0,
         'session': None,
         'last_ok': False,
+        # Tracks the highest segment id we've ever created so we can invalidate
+        # stale ones on rebuild. WLED does not delete segments implicitly.
+        'max_seen_seg_id': -1,
+        # Filled in from /json/info once the device is reachable.
+        'device_strip_length': None,
+        'device_max_seg': 16,
     }
 
     async def post(payload):
@@ -196,8 +203,30 @@ async def _worker_loop(queue, config):
             state['cooldown_until'] = time.time() + 5.0
             state['last_ok'] = False
 
+    async def fetch_info():
+        try:
+            async with state['session'].get(info_url) as resp:
+                if resp.status != 200:
+                    logger.warning("WLED info fetch returned %s", resp.status)
+                    return
+                data = await resp.json()
+                leds = data.get('leds', {}) or {}
+                count = int(leds.get('count') or 0)
+                maxseg = int(leds.get('maxseg') or 16)
+                state['device_strip_length'] = count
+                state['device_max_seg'] = max(1, maxseg)
+                if count and count != config['strip_length']:
+                    logger.warning(
+                        "WLED strip length mismatch: device=%s configured=%s — using device value",
+                        count, config['strip_length'])
+                logger.info("WLED device info: %d LEDs, max %d segments",
+                            count, maxseg)
+        except Exception as e:
+            logger.warning("WLED info fetch failed (%s)", e)
+
     async with aiohttp.ClientSession(timeout=timeout) as session:
         state['session'] = session
+        await fetch_info()
         logger.info("WLED initial brightness -> %s", config['brightness'])
         await post({'on': True, 'bri': config['brightness']})
 
@@ -255,7 +284,12 @@ async def _handle(msg, state, config, post):
         n = len(colors)
         if n == 0:
             return
-        strip = config['strip_length']
+        strip = state['device_strip_length'] or config['strip_length']
+        n = min(n, state['device_max_seg'])  # don't exceed WLED's segment cap
+        if n != len(colors):
+            logger.warning("WLED maxseg=%s, truncating to %d player segments",
+                           state['device_max_seg'], n)
+            colors = colors[:n]
         base_size = max(1, strip // n)
         rem = strip - base_size * n
         cursor = 0
@@ -264,25 +298,35 @@ async def _handle(msg, state, config, post):
         for i, c in enumerate(colors):
             size = base_size + (1 if i >= n - rem else 0)
             start = cursor
-            stop = cursor + size
+            stop = min(cursor + size, strip)
             cursor = stop
             segs_state.append((start, stop, tuple(c)))
             out_segs.append({
                 'id': i, 'start': start, 'stop': stop, 'on': True,
                 'col': [list(c), [0, 0, 0], [0, 0, 0]], 'fx': 0, 'sx': 128,
             })
+        # Invalidate any segments left over from a previous larger build.
+        for stale_id in range(n, max(state['max_seen_seg_id'] + 1, n)):
+            out_segs.append({'id': stale_id, 'stop': 0})
+        state['max_seen_seg_id'] = max(state['max_seen_seg_id'], n - 1)
         state['segments'] = segs_state
         state['last_tempo_sx'] = None
-        logger.info("WLED build_segments: %d segments across %d LEDs", n, cursor)
-        await post({'on': True, 'seg': out_segs})
+        logger.info("WLED build_segments: %d active segments across %d LEDs (invalidating %d stale)",
+                    n, cursor, len(out_segs) - n)
+        await post({'on': True, 'mainseg': 0, 'seg': out_segs})
 
     elif t == MSG_TEAR_SEGMENTS:
-        logger.info("WLED tear_segments")
+        strip = state['device_strip_length'] or config['strip_length']
+        logger.info("WLED tear_segments -> single full-strip segment (%d LEDs)", strip)
+        out_segs = [{'id': 0, 'start': 0, 'stop': strip, 'on': True,
+                     'col': [[255, 255, 255], [0, 0, 0], [0, 0, 0]], 'fx': 0}]
+        # Invalidate every other segment we've ever created.
+        for stale_id in range(1, state['max_seen_seg_id'] + 1):
+            out_segs.append({'id': stale_id, 'stop': 0})
         state['segments'] = []
         state['last_tempo_sx'] = None
-        await post({'on': True, 'seg': [
-            {'id': 0, 'start': 0, 'stop': config['strip_length'], 'on': True}
-        ]})
+        state['max_seen_seg_id'] = 0
+        await post({'on': True, 'mainseg': 0, 'seg': out_segs})
 
     elif t == MSG_TEMPO:
         if not config['track_music_speed'] or not state['segments']:
