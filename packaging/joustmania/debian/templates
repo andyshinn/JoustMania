@@ -1,0 +1,11 @@
+Template: joustmania/disable_internal_bt
+Type: boolean
+Default: false
+Description: Disable the Raspberry Pi's on-board Bluetooth adapter?
+ JoustMania works best with a long-range Class 1 USB Bluetooth dongle for
+ PS Move controller pairing. Disabling the on-board adapter forces BlueZ
+ to use the dongle.
+ .
+ Selecting "yes" appends "dtoverlay=disable-bt" to /boot/firmware/config.txt
+ and requires a reboot to take effect. You can undo this by editing that
+ file manually. Selecting "no" leaves the boot configuration unchanged.

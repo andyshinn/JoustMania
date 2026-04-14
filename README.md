@@ -53,17 +53,25 @@ This will allow you to charge 9 controllers at once through the pi
 Installation
 ---------------------------
 
-0. [Download](https://www.raspberrypi.org/downloads/raspbian/) and [Install](https://www.raspberrypi.org/documentation/installation/installing-images/README.md) Raspbian on the micro SD card, this build was tested on the pi 4 and 5, with the latest version of the raspberry pi OS, 32 or 64 bit. If you would like to try installing on [Debian](https://raspi.debian.net/) there are some extra [instructions here](https://github.com/adangert/JoustMania/wiki/Debian-Instructions) that could help.
+0. [Download](https://www.raspberrypi.org/downloads/raspbian/) and [Install](https://www.raspberrypi.org/documentation/installation/installing-images/README.md) Raspberry Pi OS (Debian 13 / trixie, 64-bit) on the micro SD card. Tested on Pi 4 and Pi 5.
 0. Connect the bluetooth adapters, (usb audio connector for the pi 5), and speakers
-0. Turn on the pi, open a Terminal and run these commands, the pi will reboot on a successful install
-0. If something goes wrong during installation, try running setup.sh again.
+0. Turn on the pi, open a Terminal and run these commands:
 
 ```
-git clone https://github.com/adangert/JoustMania.git
-cd JoustMania
-sudo ./setup.sh --disable_internal_bt
+# Pick the latest release from https://github.com/adangert/JoustMania/releases
+VERSION=X.Y.Z
+ARCH=$(dpkg --print-architecture)
+BASE=https://github.com/adangert/JoustMania/releases/download/v${VERSION}
+wget ${BASE}/libpsmoveapi_${VERSION}_${ARCH}.deb
+wget ${BASE}/joustmania_${VERSION}_all.deb
+sudo apt install ./libpsmoveapi_${VERSION}_${ARCH}.deb ./joustmania_${VERSION}_all.deb
 ```
-If you would not like to turn off the internal bluetooth (this is not recommended) leave off --disable_internal_bt
+
+During install, debconf will ask whether to disable the Pi's on-board Bluetooth — answer "yes" if you're using a long-range USB Bluetooth dongle (recommended), then reboot. JoustMania starts automatically on boot via the `joustmania` systemd service (`systemctl status joustmania`, `journalctl -u joustmania -f`).
+
+### Development setup (building from source)
+
+The legacy `setup.sh` flow still works for developers who want to run JoustMania out of a git checkout. See [DEVELOPMENT_README.md](DEVELOPMENT_README.md).
 
 You can now disconnect the hdmi cable and run JoustMania in headless mode. JoustMania will automatically boot up on restart, menu music should start playing once the pi boots up. Note audio will only play out of HDMI when plugged into a monitor, and only out of the audio jack when unpluged from a monitor.
 

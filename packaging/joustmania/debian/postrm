@@ -1,0 +1,38 @@
+#!/bin/sh
+set -e
+
+STATE_DIR=/var/lib/joustmania
+
+case "$1" in
+    purge)
+        # Revert /etc/bluetooth/input.conf if we modified it.
+        if [ -f "$STATE_DIR/input.conf.backup" ]; then
+            cp -a "$STATE_DIR/input.conf.backup" /etc/bluetooth/input.conf || true
+        fi
+
+        # Revert /boot/{firmware/,}config.txt if we appended to it.
+        if [ -f "$STATE_DIR/config_txt.modified" ]; then
+            CONFIG_TXT="$(cat "$STATE_DIR/config_txt.modified")"
+            if [ -f "$CONFIG_TXT" ]; then
+                sed -i '/^dtoverlay=disable-bt$/d' "$CONFIG_TXT" || true
+            fi
+        fi
+
+        rm -rf /opt/joustmania/vendor
+        rm -rf "$STATE_DIR"
+
+        if [ -e /usr/share/debconf/confmodule ]; then
+            . /usr/share/debconf/confmodule
+            db_purge || true
+        fi
+        ;;
+
+    remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        ;;
+esac
+
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || true
+fi
+
+exit 0

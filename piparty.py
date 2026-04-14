@@ -26,12 +26,15 @@ import update
 env_file = find_dotenv()
 load_dotenv()
 
-CONFIG_DIR = "./conf"
+CONFIG_DIRS = ["/etc/joustmania", "./conf"]
 LOG_DIR = "./logs"
 
 log_configs = {"dev": "logging.dev.ini", "prod": "logging.prod.ini"}
 config = log_configs.get(os.environ["ENV"], "logging.dev.ini")
-config_path = "/".join([CONFIG_DIR, config])
+config_path = next(
+    (os.path.join(d, config) for d in CONFIG_DIRS if os.path.isfile(os.path.join(d, config))),
+    os.path.join(CONFIG_DIRS[-1], config),
+)
 
 timestamp = datetime.now().strftime("%Y%m%d-%H:%M:%S")
 

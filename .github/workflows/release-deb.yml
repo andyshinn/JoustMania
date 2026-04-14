@@ -1,0 +1,127 @@
+name: Build .deb packages
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version string (e.g. 1.0.0). Defaults to git describe."
+        required: false
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: ver
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            V="${{ inputs.version }}"
+          else
+            V="$(git describe --tags --always --dirty 2>/dev/null | sed 's/^v//')"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Version: $V"
+
+  build-psmoveapi:
+    name: Build libpsmoveapi (arm64)
+    needs: version
+    runs-on: ubuntu-24.04-arm
+    container:
+      image: debian:trixie
+      options: --user root
+    steps:
+      - name: Install build tooling
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates git dpkg-dev \
+            build-essential cmake pkg-config swig \
+            libbluetooth-dev libudev-dev libusb-dev libv4l-dev \
+            libdbus-1-dev libdbus-glib-1-dev \
+            python3 python3-dev \
+            ruby ruby-dev
+          gem install --no-document fpm
+
+      - uses: actions/checkout@v6
+
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Build psmoveapi
+        run: bash packaging/psmoveapi/build.sh
+
+      - name: Package .deb
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: bash packaging/psmoveapi/fpm.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: deb-libpsmoveapi
+          path: packaging/dist/libpsmoveapi_*.deb
+          if-no-files-found: error
+
+  build-joustmania:
+    name: Build joustmania (all)
+    needs: version
+    runs-on: ubuntu-24.04
+    container:
+      image: debian:trixie
+      options: --user root
+    steps:
+      - name: Install build tooling
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates git rsync dpkg-dev \
+            ruby ruby-dev
+          gem install --no-document fpm
+
+      - uses: actions/checkout@v6
+
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Stage app tree
+        run: bash packaging/joustmania/build.sh
+
+      - name: Package .deb
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          ARCH: all
+        run: bash packaging/joustmania/fpm.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: deb-joustmania
+          path: packaging/dist/joustmania_*.deb
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: [build-psmoveapi, build-joustmania]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.deb
+          fail_on_unmatched_files: true
