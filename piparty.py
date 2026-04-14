@@ -86,7 +86,7 @@ def track_move(serial, move_num, move, menu_opts, force_color, battery, dead_cou
     while True:
         if(restart.value == 1 or menu.value == 0 or kill_proc.value):
             return # Stop tracking move if restarting, exiting menu, or kill_procedures
-        time.sleep(0.01)
+        time.sleep(0.005)
         # If there is a new event from the move
         if move.poll():
 
@@ -692,8 +692,8 @@ class Menu():
                         self.admin_move = None
 
             # BT scan + new-move detection is expensive (D-Bus introspection).
-            # The surrounding loop runs at ~50 Hz; only check ~1 Hz.
-            if self.i % 50 == 0:
+            # The surrounding loop runs at ~200 Hz; only check ~1 Hz.
+            if self.i % 200 == 0:
                 self.check_for_new_moves()
             if len(self.tracked_moves) > 0:
                 self.check_new_admin()
@@ -705,7 +705,7 @@ class Menu():
                 self.check_charging_controller()
             self.check_command_queue()
             self.update_status('menu')
-            time.sleep(0.02)
+            time.sleep(0.005)
 
 
     def check_admin_controls(self):
