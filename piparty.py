@@ -403,7 +403,6 @@ class Menu():
                             self.pair.update_adapters()
                         if on:
                             jm_dbus.enable_pairable(hci)
-                            jm_dbus.enable_pairable(hci)
                         else:
                             jm_dbus.disable_pairable(hci)
                     except:
@@ -692,7 +691,10 @@ class Menu():
                     if key == self.admin_move:
                         self.admin_move = None
 
-            self.check_for_new_moves()
+            # BT scan + new-move detection is expensive (D-Bus introspection).
+            # The surrounding loop runs at ~50 Hz; only check ~1 Hz.
+            if self.i % 50 == 0:
+                self.check_for_new_moves()
             if len(self.tracked_moves) > 0:
                 self.check_new_admin()
                 self.check_change_mode() # TODO - do we want to make this so only admins can change mode?
@@ -703,6 +705,7 @@ class Menu():
                 self.check_charging_controller()
             self.check_command_queue()
             self.update_status('menu')
+            time.sleep(0.02)
 
 
     def check_admin_controls(self):
