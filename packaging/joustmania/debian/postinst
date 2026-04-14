@@ -1,0 +1,60 @@
+#!/bin/sh
+set -e
+
+. /usr/share/debconf/confmodule
+
+STATE_DIR=/var/lib/joustmania
+mkdir -p "$STATE_DIR"
+
+case "$1" in
+    configure)
+        # --- 1. pip-only deps venv -----------------------------------------
+        # audioop-lts: audioop was removed from the stdlib in Python 3.13.
+        # pydub: no python3-pydub package on Debian trixie.
+        # Everything else is installed from apt via the .deb's Depends.
+        VENV=/opt/joustmania/vendor
+        if [ ! -d "$VENV" ]; then
+            python3 -m venv --system-site-packages "$VENV"
+        fi
+        "$VENV/bin/pip" install --quiet --upgrade audioop-lts pydub
+        # Normalise the site-packages path so the unit's PYTHONPATH works
+        # regardless of the exact python3.X version.
+        SITE="$("$VENV/bin/python3" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+        mkdir -p /opt/joustmania/vendor/lib/python3
+        ln -sfn "$SITE" /opt/joustmania/vendor/lib/python3/site-packages
+
+        # --- 2. /etc/bluetooth/input.conf ----------------------------------
+        # PS3/PS Move controllers need ClassicBondedOnly=false to pair.
+        # See setup.sh:139 and https://github.com/thp/psmoveapi/issues/489.
+        if [ -f /etc/bluetooth/input.conf ] && ! grep -qE '^ClassicBondedOnly=false' /etc/bluetooth/input.conf; then
+            cp -a /etc/bluetooth/input.conf "$STATE_DIR/input.conf.backup"
+            sed -i '/^#\?ClassicBondedOnly=\(true\|false\)$/s/.*/ClassicBondedOnly=false/' /etc/bluetooth/input.conf
+            touch "$STATE_DIR/input.conf.modified"
+        fi
+
+        # --- 3. /boot/firmware/config.txt (optional) -----------------------
+        db_get joustmania/disable_internal_bt || true
+        if [ "$RET" = "true" ]; then
+            CONFIG_TXT=/boot/firmware/config.txt
+            [ -f "$CONFIG_TXT" ] || CONFIG_TXT=/boot/config.txt
+            if [ -f "$CONFIG_TXT" ] && ! grep -qxF 'dtoverlay=disable-bt' "$CONFIG_TXT"; then
+                echo 'dtoverlay=disable-bt' >> "$CONFIG_TXT"
+                echo "$CONFIG_TXT" > "$STATE_DIR/config_txt.modified"
+                rm -rf /var/lib/bluetooth/* || true
+                echo "joustmania: appended 'dtoverlay=disable-bt' to $CONFIG_TXT — reboot required." >&2
+            fi
+        fi
+
+        # --- 4. systemd ----------------------------------------------------
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload
+            deb-systemd-helper enable joustmania.service >/dev/null || true
+            deb-systemd-invoke start joustmania.service || true
+        fi
+        ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+esac
+
+exit 0

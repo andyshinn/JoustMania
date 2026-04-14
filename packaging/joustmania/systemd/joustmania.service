@@ -1,0 +1,25 @@
+[Unit]
+Description=JoustMania
+After=network-online.target bluetooth.service sound.target
+Wants=network-online.target bluetooth.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/joustmania
+Environment=HOME=/root
+Environment=ENV=dev
+Environment=PYTHONPATH=/opt/joustmania/psmoveapi:/opt/joustmania/vendor/lib/python3/site-packages
+ExecStart=/usr/bin/python3 /opt/joustmania/piparty.py
+Restart=always
+RestartSec=1
+StartLimitBurst=0
+KillMode=control-group
+KillSignal=SIGKILL
+TimeoutStopSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=joustmania
+
+[Install]
+WantedBy=multi-user.target

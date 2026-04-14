@@ -1,0 +1,14 @@
+#!/bin/sh
+set -e
+
+if [ -d /run/systemd/system ]; then
+    deb-systemd-invoke stop joustmania.service || true
+fi
+
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    if [ -d /run/systemd/system ]; then
+        deb-systemd-helper disable joustmania.service >/dev/null || true
+    fi
+fi
+
+exit 0

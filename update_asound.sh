@@ -2,9 +2,11 @@
 
 # Prevent apt from prompting us about restarting services.
 export DEBIAN_FRONTEND=noninteractive
-HOMENAME=`who | head -n1 | cut -d " " -f1`
-HOMEDIR=/home/$HOMENAME
-cd $HOMEDIR
+# Resolve paths relative to this script so it works from /opt/joustmania
+# (deb install) as well as ~/JoustMania (dev checkout).
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CONF_DIR="$SCRIPT_DIR/conf"
+cd "$SCRIPT_DIR"
 
 #This is needed to hear espeak with sudo (adjusting asound.conf)
 #adds asound.conf to /etc/ This is important for audio to play
@@ -28,9 +30,9 @@ if [ ! -z "$headphones_info" ]; then
 	card_number=$(echo "$headphones_info" | sed -n 's/^card \([0-9]*\):.*$/\1/p' | head -n 1) || exit -1
 	echo "headphones card_number is $card_number"
 	#update the asound.conf to have the correct card to play from, copy to /etc
-	sed -i "s/pcm \"hw:[0-9]*,/pcm \"hw:$card_number,/g" $HOMEDIR/JoustMania/conf/asound_pi_4.conf || exit -1
-	sed -i "s/card [0-9]*/card $card_number/g" $HOMEDIR/JoustMania/conf/asound_pi_4.conf || exit -1
-	sudo cp $HOMEDIR/JoustMania/conf/asound_pi_4.conf /etc/asound.conf || exit -1
+	sed -i "s/pcm \"hw:[0-9]*,/pcm \"hw:$card_number,/g" $CONF_DIR/asound_pi_4.conf || exit -1
+	sed -i "s/card [0-9]*/card $card_number/g" $CONF_DIR/asound_pi_4.conf || exit -1
+	sudo cp $CONF_DIR/asound_pi_4.conf /etc/asound.conf || exit -1
 else
 	echo "Headphones not found, likely a pi 5"
 fi
@@ -42,9 +44,9 @@ if [ ! -z "$USB_info" ]; then
 	card_number=$(echo "$USB_info" | sed -n 's/^card \([0-9]*\):.*$/\1/p' | head -n 1) || exit -1
 	echo "USB card_number is $card_number"
 	#update the asound.conf to have the correct card to play from, copy to /etc
-	sed -i "s/pcm \"hw:[0-9]*,/pcm \"hw:$card_number,/g" $HOMEDIR/JoustMania/conf/asound.conf || exit -1
-	sed -i "s/card [0-9]*/card $card_number/g" $HOMEDIR/JoustMania/conf/asound.conf || exit -1
-	sudo cp $HOMEDIR/JoustMania/conf/asound.conf /etc/ || exit -1
+	sed -i "s/pcm \"hw:[0-9]*,/pcm \"hw:$card_number,/g" $CONF_DIR/asound.conf || exit -1
+	sed -i "s/card [0-9]*/card $card_number/g" $CONF_DIR/asound.conf || exit -1
+	sudo cp $CONF_DIR/asound.conf /etc/ || exit -1
 else
 	echo "No USB audio jack found, likely a pi 4"
 fi
