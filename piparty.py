@@ -60,6 +60,7 @@ if platform == "linux" or platform == "linux2":
 elif "win" in platform:
     import win_jm_dbus as jm_dbus
     import win_pair as pair
+import subprocess
 import controller_process
 import update
 import lcd_menu
@@ -1040,6 +1041,9 @@ class Menu():
                 # writing the yaml itself, so piparty stays the single writer
                 # and cannot race the WebUI.
                 self.update_setting(package['key'], package['value'])
+            elif command == 'lcd_reset_bt':
+                logger.info("LCD requested a Bluetooth reset")
+                self.run_bluetooth_reset()
             elif command in ('lcd_poweroff', 'lcd_reboot'):
                 action = 'poweroff' if command == 'lcd_poweroff' else 'reboot'
                 logger.info("LCD requested %s", action)
@@ -1047,6 +1051,29 @@ class Menu():
                         args=(action,)).start()
             else:
                 self.command_from_web = command
+
+    def run_bluetooth_reset(self):
+        """Clear saved PS Move registrations and restart, as the WebUI does.
+
+        The script stops JoustMania along with this process, so it has to run
+        detached and after a short delay -- otherwise it kills its own parent
+        mid-write.
+        """
+        script = APP_DIR / 'reset_psmove_connections.sh'
+        if not script.is_file():
+            logger.error("Bluetooth reset script not found at %s", script)
+            return
+        try:
+            subprocess.Popen(
+                ['/bin/bash', '-c', 'sleep 1; exec "$0"', str(script)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                close_fds=True,
+            )
+        except Exception:
+            logger.exception("Could not start the Bluetooth reset")
 
     def update_status(self,game_status):
         self.ns.status ={
@@ -1057,7 +1084,13 @@ class Menu():
             'ready_count' : len(self.get_ready_moves(True)),
             'alive_count' : self.move_count - self.dead_count.value,
             'ticker': self.i,
-            'git_hash': self.git_hash
+            'git_hash': self.git_hash,
+            # Pairing state, for the LCD's sync screen. Counted over distinct
+            # serials because a controller plugged in while also connected
+            # over Bluetooth appears in self.moves twice.
+            'usb_count': len({c.serial for c in self.moves if c.usb}),
+            'bt_count': len({c.serial for c in self.moves if c.bluetooth}),
+            'paired_count': len(self.paired_moves),
         }
 
         battery_status = {}

@@ -790,3 +790,81 @@ class BatteryLabelTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SyncPageTest(unittest.TestCase):
+    """Pairing is automatic; the page's job is to show it working and say
+    what to do next."""
+
+    def render(self, **counts):
+        status = dict(MENU_STATUS, **counts)
+        return lcd_menu.SyncPage().render(ctx(status))
+
+    def test_prompts_for_usb_when_nothing_is_connected(self):
+        top, hint = self.render(bt_count=0, usb_count=0)
+        self.assertIn('BT0', top)
+        self.assertIn('USB', hint)
+
+    def test_prompts_to_unplug_once_a_controller_is_on_usb(self):
+        """USB means piparty has written the host address; the next step is
+        to unplug and wake it over Bluetooth."""
+        _, hint = self.render(bt_count=0, usb_count=1)
+        self.assertIn('Unplug', hint)
+        self.assertIn('PS', hint)
+
+    def test_shows_live_counts(self):
+        top, _ = self.render(bt_count=3, usb_count=1)
+        self.assertIn('BT3', top)
+        self.assertIn('USB1', top)
+
+    def test_select_guards_the_bluetooth_reset(self):
+        """The reset stops and restarts JoustMania, so it needs a confirm."""
+        action = lcd_menu.SyncPage().on_button(SELECT, CTX_MATRIX['menu'])
+        self.assertIsInstance(action, Push)
+        self.assertIsInstance(action.page, ConfirmPage)
+
+        confirm = action.page
+        confirm.on_enter(CTX_MATRIX['menu'])
+        self.assertEqual(confirm.index, 0)                    # defaults to No
+        self.assertIsInstance(confirm.on_button(SELECT, CTX_MATRIX['menu']), Pop)
+
+        confirm.on_button(DOWN, CTX_MATRIX['menu'])
+        actions = confirm.on_button(SELECT, CTX_MATRIX['menu'])
+        self.assertEqual(actions[0], Command({'command': 'lcd_reset_bt'}))
+
+    def test_left_goes_back(self):
+        self.assertIsInstance(
+            lcd_menu.SyncPage().on_button(LEFT, CTX_MATRIX['menu']), Pop)
+
+    def test_is_reachable_from_the_main_menu(self):
+        menu = build_main_menu()
+        labels = [i.label for i in menu._visible_items(CTX_MATRIX['menu'])]
+        self.assertIn('Sync Ctrls', labels)
+
+    def test_survives_the_in_game_status_shape(self):
+        """games/game.py does not publish pairing counts."""
+        top, hint = lcd_menu.SyncPage().render(CTX_MATRIX['in_game'])
+        self.assertIn('BT0', top)
+        self.assertTrue(hint)
+
+    def test_fits_the_panel_with_large_counts(self):
+        for bt, usb in ((0, 0), (9, 9), (12, 4), (99, 99)):
+            top, hint = self.render(bt_count=bt, usb_count=usb)
+            self.assertLessEqual(len(top), COLS)
+            self.assertLessEqual(len(hint), COLS)
+
+
+class ConfirmPageRenderTest(unittest.TestCase):
+    def test_question_is_not_crowded_out_by_a_counter(self):
+        """A '1/2' counter would truncate 'Reset Bluetooth?' to 'Reset Blueto'."""
+        page = ConfirmPage('Reset Bluetooth?', lambda: None)
+        page.on_enter(CTX_MATRIX['menu'])
+        top, bottom = page.render(CTX_MATRIX['menu'])
+        self.assertEqual(top, 'Reset Bluetooth?')
+        self.assertEqual(bottom, '>No')
+
+    def test_menus_still_show_their_counter(self):
+        menu = build_main_menu()
+        menu.on_enter(CTX_MATRIX['menu'])
+        top, _ = menu.render(CTX_MATRIX['menu'])
+        self.assertIn('/', top)

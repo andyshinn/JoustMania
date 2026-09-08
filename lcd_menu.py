@@ -170,6 +170,8 @@ class Item:
 class ListPage(Page):
     """Scrolling list with a cursor. Base for every menu."""
 
+    show_counter = True
+
     def __init__(self, title, items):
         self.title = title
         self.items = items
@@ -189,7 +191,7 @@ class ListPage(Page):
         item = items[self.index]
 
         header = self.title
-        if len(items) > 1:
+        if self.show_counter and len(items) > 1:
             counter = '{}/{}'.format(self.index + 1, len(items))
             header = _pad_between(self.title, counter)
 
@@ -354,6 +356,10 @@ class NumericPage(Page):
 class ConfirmPage(ListPage):
     """Yes/No guard in front of a destructive action. Defaults to No."""
 
+    # No "1/2" counter: it is noise on a two-option prompt, and it crowds out
+    # the question, which is the part that matters here.
+    show_counter = False
+
     def __init__(self, prompt, on_yes):
         # Plain Items: this page handles Select itself, and an ActionItem with
         # no payload would be a trap for anyone reusing these later.
@@ -495,6 +501,46 @@ class ControllersPage(StaticPage):
         return top, _pad_between('Ready', str(status.get('ready_count', 0)))
 
 
+class SyncPage(Page):
+    """Walks you through pairing a controller.
+
+    Pairing itself is automatic: plugging a controller in over USB makes
+    piparty write this Pi's Bluetooth address to it (Menu.pair_usb_move), flash
+    it white, and record it in paired_moves. The controller then has to be
+    unplugged and woken with the PS button to connect over Bluetooth.
+
+    None of that needs a button here -- what was missing is being able to see
+    it happening without squinting at controller LEDs. So this page reports
+    live counts and says what to do next.
+    """
+
+    title = 'Sync'
+
+    def render(self, ctx):
+        status = ctx.status
+        bt_count = status.get('bt_count', 0)
+        usb_count = status.get('usb_count', 0)
+        top = 'Sync  BT{} USB{}'.format(bt_count, usb_count)
+
+        if usb_count:
+            # Already written to; the controller flashes white when it takes.
+            hint = 'Unplug, press PS'
+        elif bt_count:
+            hint = 'Or plug in USB'
+        else:
+            hint = 'Plug in via USB'
+        return top[:COLS], hint
+
+    def on_button(self, btn, ctx):
+        if btn == LEFT:
+            return Pop()
+        if btn in (SELECT, RIGHT):
+            return Push(ConfirmPage(
+                'Reset Bluetooth?',
+                lambda: Command({'command': 'lcd_reset_bt'})))
+        return None
+
+
 def _local_ip():
     """Best-effort LAN address, same trick webui.web_urls() uses.
 
@@ -556,6 +602,7 @@ def _power_page():
 def build_main_menu():
     return ListPage('Main Menu', [
         SubmenuItem('Game Mode', _game_mode_page),
+        SubmenuItem('Sync Ctrls', SyncPage),
         ActionItem('Start Game', {'command': 'startgame'},
                    visible_when=lambda ctx: not ctx.in_game),
         ActionItem('Kill Game', {'command': 'killgame'},
