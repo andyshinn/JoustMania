@@ -75,6 +75,28 @@ class SettingsForm(Form):
     force_all_start = BooleanField('When force starting start with all or only those who pushed trigger')
     random_team_size = SelectField('size of random teams',choices=[(2,'2'),(3,'3'),(4,'4'),(5,'5'),(6,'6')],coerce=int)
 
+    # LCD KeyPad HAT (DFR0514) and UPS HAT (DFR0494). These are SelectFields
+    # rather than IntegerFields so the ranges are enforced for free and a blank
+    # input can never post None over a saved value.
+    _enable_choices = [('auto','Auto-detect'),('on','Always on'),('off','Off')]
+    _percent_choices = [(pct,'{}%'.format(pct)) for pct in range(0,101,5)]
+    lcd_enabled = SelectField('LCD HAT',choices=_enable_choices,coerce=str)
+    lcd_brightness = SelectField('LCD brightness',
+                                 choices=[c for c in _percent_choices if c[0] >= 10],coerce=int)
+    lcd_idle_brightness = SelectField('LCD brightness when idle',
+                                      choices=_percent_choices,coerce=int)
+    lcd_idle_dim_secs = SelectField('Dim the LCD after',
+                                    choices=[(0,'Never'),(30,'30 seconds'),(60,'1 minute'),
+                                             (120,'2 minutes'),(300,'5 minutes'),
+                                             (600,'10 minutes'),(900,'15 minutes')],coerce=int)
+    lcd_backlight_ambient = BooleanField('Tint the LCD backlight by game state')
+    ups_enabled = SelectField('UPS HAT',choices=_enable_choices,coerce=str)
+    ups_warn_percent = SelectField('Warn when battery below',
+                                   choices=[(pct,'{}%'.format(pct)) for pct in range(5,51,5)],coerce=int)
+    ups_critical_percent = SelectField('Shut down when battery below',
+                                       choices=[(pct,'{}%'.format(pct)) for pct in range(1,26)],coerce=int)
+    ups_auto_shutdown = BooleanField('Shut down automatically on critical battery')
+
 class WebUI():
     def __init__(self, command_queue=Queue(), ns=None, controller_manager_instance=None):
 
@@ -179,7 +201,15 @@ class WebUI():
         return {
             "adapters": bluetooth_diagnostics.get_adapters(),
             "controllers": self._controller_debug_data(),
+            "ups": self._ups_debug_data(),
         }
+
+    def _ups_debug_data(self):
+        """UPS HAT state, published by the LCD process. Empty when absent."""
+        try:
+            return dict(self.ns.ups_status or {})
+        except Exception:
+            return {}
 
     def reset_bluetooth(self):
         """Launch the existing reset workflow after this response is sent.
@@ -374,7 +404,14 @@ class WebUI():
                 red_on_kill = self.ns.settings['red_on_kill'],
                 random_team_size = self.ns.settings['random_team_size'],
                 force_all_start = self.ns.settings['force_all_start'],
-                color_lock_choices = temp_colors
+                color_lock_choices = temp_colors,
+                lcd_enabled = self.ns.settings.get('lcd_enabled', 'auto'),
+                lcd_brightness = self.ns.settings.get('lcd_brightness', 100),
+                lcd_idle_brightness = self.ns.settings.get('lcd_idle_brightness', 15),
+                lcd_idle_dim_secs = self.ns.settings.get('lcd_idle_dim_secs', 120),
+                ups_enabled = self.ns.settings.get('ups_enabled', 'auto'),
+                ups_warn_percent = self.ns.settings.get('ups_warn_percent', 20),
+                ups_critical_percent = self.ns.settings.get('ups_critical_percent', 5),
             )
             return render_template('settings.html', form=settingsForm, settings=self.ns.settings)
 
@@ -391,9 +428,18 @@ class WebUI():
                 temp_colors[key] = self.ns.settings['color_lock_choices'][key]
                 colors_are_good = False
 
+        # Drop Nones so a field the form did not post can never clobber a
+        # saved value.
+        web_settings = {k: v for k, v in web_settings.items() if v is not None}
+
         temp_settings = self.ns.settings
         temp_settings.update(web_settings)
         temp_settings['color_lock_choices'] = temp_colors
+
+        # The dim level is meaningless above the normal level.
+        temp_settings['lcd_idle_brightness'] = min(
+            temp_settings.get('lcd_idle_brightness', 15),
+            temp_settings.get('lcd_brightness', 100))
 
         #secret setting, keep it True
         #temp_settings['enforce_minimum'] = 'enforce_minimum' in web_settings.keys()

@@ -29,7 +29,8 @@ setup() {
         libudev-dev libbluetooth-dev \
         alsa-utils alsa-tools libasound2-dev libsdl2-mixer-2.0-0 \
         python-dbus-dev python3-dbus libdbus-glib-1-dev usbutils libopenblas-dev \
-        python3-pyaudio python3-psutil python3-setproctitle || exit -1
+        python3-pyaudio python3-psutil python3-setproctitle \
+        python3-gpiozero python3-lgpio i2c-tools || exit -1
 
     echo "Installing PS move A.P.I. software updates"
     # Install components for the controller-only PSMove API build.
@@ -54,7 +55,7 @@ setup() {
 
     echo "installing virtual environment dependencies"
 
-    $PYTHON -m pip install --ignore-installed flask Flask-WTF pyalsaaudio pydub pyyaml dbus-python python-dotenv
+    $PYTHON -m pip install --ignore-installed flask Flask-WTF pyalsaaudio pydub pyyaml dbus-python python-dotenv smbus2
 
     # audioop is not available on python >= 3.13
     $PYTHON -m pip install --ignore-installed audioop-lts || exit -1
@@ -106,6 +107,11 @@ setup() {
         
     
     
+    # I2C is needed by the LCD KeyPad HAT (DFR0514) and the UPS HAT (DFR0494).
+    # Harmless when no HAT is attached, so it is enabled unconditionally.
+    echo "enabling I2C for the LCD and UPS HATs"
+    sudo grep -qxF 'dtparam=i2c_arm=on' $config_loc || echo "dtparam=i2c_arm=on" | sudo tee -a $config_loc || exit -1
+
     #This will disable on-board bluetooth with the --disable_internal_bt command line option
     #This will allow only class one long range btdongles to connect to psmove controllers
     if [ "$1" = "--disable_internal_bt" ]; then

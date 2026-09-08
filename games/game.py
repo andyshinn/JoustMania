@@ -7,7 +7,9 @@ from piaudio import Audio
 import numpy
 import random
 import logging
+import system_power
 from math import sqrt
+from multiprocessing import Process
 
 logger = logging.getLogger(__name__)
 
@@ -268,11 +270,15 @@ class Game():
 
         if team_win:
             logger.debug("Game ended, winning team: {}".format(self.winning_team))
-            self.update_status('ending',self.winning_team)
-            self.end_game_sound()
+            # Populate winning_moves before publishing status: winner_color()
+            # falls back to a winning controller's color for the games that
+            # have no team color to look up (Zombies/Werewolf use team -1,
+            # Tournament sets no winning_team at all).
             for move_serial in self.teams.keys():
                 if self.get_real_team(self.teams[move_serial]) == self.winning_team:
                     self.winning_moves.append(move_serial)
+            self.update_status('ending',self.winning_team)
+            self.end_game_sound()
             self.game_end = True
 
     def end_game_sound(self):
@@ -381,17 +387,52 @@ class Game():
 
     def check_command_queue(self):
         package = None
+        deferred = []
         while not(self.command_queue.empty()):
-            package = self.command_queue.get()
-            command = package['command']
+            item = self.command_queue.get()
+            command = item['command']
+            if command in ('lcd_poweroff', 'lcd_reboot'):
+                # Acted on immediately rather than deferred to the menu loop:
+                # this is the LCD's critical-battery shutdown, and a game can
+                # run for many minutes before the menu regains control.
+                action = 'poweroff' if command == 'lcd_poweroff' else 'reboot'
+                logger.info("Power request during game: %s", action)
+                Process(target=system_power.request_system_power,
+                        args=(action,)).start()
+            elif command == 'setting_update':
+                # Not urgent, and applying it mid-game would be surprising.
+                # Hand it back so the menu loop applies it once the game ends.
+                deferred.append(item)
+            else:
+                package = item
+        for item in deferred:
+            self.command_queue.put(item)
         if not(package == None):
-            if command == 'killgame':
+            if package['command'] == 'killgame':
                 self.kill_game()
+
+    def winner_color(self, winning_team):
+        """Resolve the winning team to a color for out-of-process consumers.
+
+        team_colors lives on this object and is not shared, so anything reading
+        ns.status (the LCD backlight, the WebUI) cannot resolve a team index on
+        its own.
+        """
+        if self.team_colors and winning_team is not None \
+                and 0 <= winning_team < len(self.team_colors):
+            color = self.team_colors[winning_team]
+            return {'name': color.name, 'rgb': list(color.value)}
+        if self.winning_moves:
+            serial = self.winning_moves[0]
+            if serial in self.controller_colors:
+                return {'name': None, 'rgb': list(self.controller_colors[serial][:])}
+        return None
 
     def update_status(self, game_status, winning_team=-1):
         data = {'game_status': game_status,
                 'game_mode': self.game_mode.pretty_name,
                 'winning_team': winning_team,
+                'winning_team_color': self.winner_color(winning_team),
                 'total_players': len(self.move_serials),
                 'remaining_players': len(self.dead_moves) -  len([move for move, status in self.dead_moves.items() if status.value == Status.DEAD.value])}
 

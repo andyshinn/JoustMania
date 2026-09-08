@@ -62,6 +62,8 @@ elif "win" in platform:
     import win_pair as pair
 import controller_process
 import update
+import lcd_menu
+import system_power
 
 # Load the environment shipped beside the source or frozen executable.
 load_dotenv(APP_DIR / ".env")
@@ -353,6 +355,7 @@ class Menu():
         self.ns.status = dict()
         self.ns.settings = dict()
         self.ns.battery_status = dict()
+        self.ns.ups_status = dict()
         self.command_from_web = ''
         self.initialize_settings()
         self.update_settings_file() # Update settings from joustmania.yaml
@@ -384,6 +387,16 @@ class Menu():
             args=(self.command_queue, self.ns, self.controller_manager),
         )
         self.web_proc.start()
+
+        # LCD KeyPad HAT front-end. Its own process because start_game() blocks
+        # the menu loop for the whole match, which is exactly when the display
+        # matters most. Exits immediately if no HAT is attached.
+        self.lcd_proc = Process(
+            target=lcd_menu.start_lcd,
+            args=(self.command_queue, self.ns),
+            daemon=True,
+        )
+        self.lcd_proc.start()
 
         self.move_count = self.get_move_count() # Number of connected moves used in webui
 
@@ -940,7 +953,18 @@ class Menu():
                 2: ['Magenta','Green'],
                 3: ['Orange','Turquoise','Purple'],
                 4: ['Yellow','Green','Blue','Purple']
-            }
+            },
+            # LCD KeyPad HAT (DFR0514). 'auto' probes the I2C bus at startup.
+            'lcd_enabled': 'auto',
+            'lcd_brightness': 100,
+            'lcd_idle_brightness': 15,
+            'lcd_idle_dim_secs': 120,
+            'lcd_backlight_ambient': True,
+            # UPS HAT (DFR0494)
+            'ups_enabled': 'auto',
+            'ups_warn_percent': 20,
+            'ups_critical_percent': 5,
+            'ups_auto_shutdown': True,
         })
         try:
             #if anything fails during the settings file load, ignore file and stick with defaults
@@ -1011,6 +1035,16 @@ class Menu():
             command = package['command']
             if command == 'admin_update':
                 self.web_admin_update(package['admin_info'])
+            elif command == 'setting_update':
+                # The LCD routes setting changes through here rather than
+                # writing the yaml itself, so piparty stays the single writer
+                # and cannot race the WebUI.
+                self.update_setting(package['key'], package['value'])
+            elif command in ('lcd_poweroff', 'lcd_reboot'):
+                action = 'poweroff' if command == 'lcd_poweroff' else 'reboot'
+                logger.info("LCD requested %s", action)
+                Process(target=system_power.request_system_power,
+                        args=(action,)).start()
             else:
                 self.command_from_web = command
 

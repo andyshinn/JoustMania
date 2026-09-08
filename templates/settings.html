@@ -218,6 +218,21 @@ $(document).ready(function(){
             </span>
         </div>
 
+        <div class="settings-section">
+            <h3>LCD &amp; UPS HATs</h3>
+            <p>{{ form.lcd_enabled }} {{ form.lcd_enabled.label }}</p>
+            <p>{{ form.lcd_brightness }} {{ form.lcd_brightness.label }}</p>
+            <p>{{ form.lcd_idle_brightness }} {{ form.lcd_idle_brightness.label }}</p>
+            <p>{{ form.lcd_idle_dim_secs }} {{ form.lcd_idle_dim_secs.label }}</p>
+            <p>{{ form.lcd_backlight_ambient(checked=settings.lcd_backlight_ambient) }} {{ form.lcd_backlight_ambient.label }}</p>
+            <p>{{ form.ups_enabled }} {{ form.ups_enabled.label }}</p>
+            <p>{{ form.ups_warn_percent }} {{ form.ups_warn_percent.label }}</p>
+            <p>{{ form.ups_critical_percent }} {{ form.ups_critical_percent.label }}</p>
+            <p>{{ form.ups_auto_shutdown(checked=settings.ups_auto_shutdown) }} {{ form.ups_auto_shutdown.label }}</p>
+            <p style="font-size:12px;color:#666">Auto-detect enables each HAT only if it answers on the I2C bus. These
+            settings can also be changed on the LCD itself under Settings.</p>
+        </div>
+
         <input type="submit" value="Save Settings">
     </form>
     <div class="settings-section">

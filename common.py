@@ -159,4 +159,15 @@ REQUIRED_SETTINGS = [
     'menu_voice',
     'random_team_size',
     'force_all_start',
+    # LCD KeyPad HAT (DFR0514)
+    'lcd_enabled',
+    'lcd_brightness',
+    'lcd_idle_brightness',
+    'lcd_idle_dim_secs',
+    'lcd_backlight_ambient',
+    # UPS HAT (DFR0494)
+    'ups_enabled',
+    'ups_warn_percent',
+    'ups_critical_percent',
+    'ups_auto_shutdown',
 ]
