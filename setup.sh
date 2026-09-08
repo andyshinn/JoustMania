@@ -109,8 +109,13 @@ setup() {
     
     # I2C is needed by the LCD KeyPad HAT (DFR0514) and the UPS HAT (DFR0494).
     # Harmless when no HAT is attached, so it is enabled unconditionally.
+    # Two separate things are required: dtparam turns on the I2C controller,
+    # and the i2c-dev module is what exposes it as /dev/i2c-1. Enabling only
+    # the first leaves i2cdetect reporting "No such file or directory".
     echo "enabling I2C for the LCD and UPS HATs"
     sudo grep -qxF 'dtparam=i2c_arm=on' $config_loc || echo "dtparam=i2c_arm=on" | sudo tee -a $config_loc || exit -1
+    sudo grep -qxF 'i2c-dev' /etc/modules || echo "i2c-dev" | sudo tee -a /etc/modules || exit -1
+    sudo modprobe i2c-dev || true
 
     #This will disable on-board bluetooth with the --disable_internal_bt command line option
     #This will allow only class one long range btdongles to connect to psmove controllers

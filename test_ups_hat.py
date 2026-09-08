@@ -113,22 +113,6 @@ class BatteryPolicyTest(unittest.TestCase):
         self.assertEqual(self.policy.update(None), BatteryPolicy.OK)
         self.assertEqual(self.policy.update({}), BatteryPolicy.OK)
 
-    def test_trend_needs_a_full_window(self):
-        self.assertEqual(self.policy.trend(), 'steady')
-
-    def test_trend_detects_charging_and_discharging(self):
-        for mv in (3700, 3720, 3740, 3760, 3780):
-            self.policy.update(reading(50, mv))
-        self.assertEqual(self.policy.trend(), 'charging')
-        for mv in (3780, 3760, 3740, 3720, 3700):
-            self.policy.update(reading(50, mv))
-        self.assertEqual(self.policy.trend(), 'discharging')
-
-    def test_trend_steady_on_noise(self):
-        for mv in (3700, 3702, 3699, 3701, 3700):
-            self.policy.update(reading(50, mv))
-        self.assertEqual(self.policy.trend(), 'steady')
-
 
 if __name__ == '__main__':
     unittest.main()

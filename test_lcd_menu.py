@@ -48,10 +48,8 @@ SETTINGS = {
     'ups_critical_percent': 5, 'ups_auto_shutdown': True,
 }
 
-UPS_OK = {'percent': 87.0, 'millivolts': 4020, 'level': 'ok',
-          'trend': 'discharging'}
-UPS_CRITICAL = {'percent': 3.0, 'millivolts': 3400, 'level': 'critical',
-                'trend': 'discharging'}
+UPS_OK = {'percent': 87.0, 'millivolts': 4020, 'level': 'ok'}
+UPS_CRITICAL = {'percent': 3.0, 'millivolts': 3400, 'level': 'critical'}
 
 
 def ctx(status=None, settings=None, ups=None, now=100.0):
@@ -162,7 +160,7 @@ class HomePageTest(unittest.TestCase):
         top, bottom = lcd_menu.BatteryPage().render(CTX_MATRIX['menu'])
         self.assertIn('87%', top)
         self.assertIn('4.02V', top)
-        self.assertIn('battery', bottom.lower())
+        self.assertTrue(bottom.startswith('['))
 
     def test_carousel_skips_hidden_pages(self):
         """With no UPS the battery page drops out of the rotation entirely."""
@@ -738,3 +736,57 @@ class PolicySyncTest(unittest.TestCase):
     def test_no_policy_is_not_an_error(self):
         app = LcdApp(FakeQueue(), FakeNs(), FakeLcd(), keypad=None)
         app.tick(now=1.0)   # must not raise
+
+
+class BatteryLabelTest(unittest.TestCase):
+    """The page reports only what the gauge measures.
+
+    It used to try to infer charging from a voltage trend and got it wrong --
+    reporting "On battery" while plugged in. The MAX17043 has no current sense
+    and the HAT exposes no charge-status register, so that was never reliably
+    knowable and the display no longer claims it.
+    """
+
+    def render(self, **kwargs):
+        data = {'percent': 70.0, 'millivolts': 3850, 'level': 'ok'}
+        data.update(kwargs)
+        return lcd_menu.BatteryPage().render(ctx(MENU_STATUS, ups=data))
+
+    def test_shows_charge_and_voltage(self):
+        top, _ = self.render(percent=72.3, millivolts=3855)
+        self.assertIn('72%', top)
+        self.assertIn('3.85V', top)
+
+    def test_makes_no_claim_about_charging(self):
+        for millivolts in (3580, 3855, 4075, 4200):
+            top, bottom = self.render(millivolts=millivolts)
+            joined = (top + bottom).lower()
+            for word in ('charg', 'battery ok', 'on battery'):
+                with self.subTest(millivolts=millivolts, word=word):
+                    self.assertNotIn(word, joined)
+
+    def test_second_line_is_a_gauge(self):
+        _, bottom = self.render(percent=100.0)
+        self.assertEqual(bottom, '[' + '#' * (COLS - 2) + ']')
+        _, bottom = self.render(percent=0.0)
+        self.assertEqual(bottom, '[' + '-' * (COLS - 2) + ']')
+
+    def test_warnings_replace_the_gauge(self):
+        self.assertEqual(self.render(level='warn')[1], 'Low battery')
+        self.assertEqual(self.render(level='critical')[1], 'CRITICAL - low!')
+
+    def test_handles_a_missing_reading(self):
+        page = lcd_menu.BatteryPage()
+        top, bottom = page.render(ctx(MENU_STATUS, ups={'level': 'ok'}))
+        self.assertEqual(bottom, 'No reading')
+
+    def test_every_state_fits_the_panel(self):
+        for level in ('ok', 'warn', 'critical'):
+            for percent in (0.0, 50.0, 100.0):
+                top, bottom = self.render(level=level, percent=percent)
+                self.assertLessEqual(len(top), COLS)
+                self.assertLessEqual(len(bottom), COLS)
+
+
+if __name__ == '__main__':
+    unittest.main()

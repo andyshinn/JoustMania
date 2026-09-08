@@ -11,7 +11,6 @@ Reference: https://wiki.dfrobot.com/dfr0494/docs/19867
 """
 
 import logging
-from collections import deque
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +83,11 @@ class BatteryPolicy:
     level change requires `consecutive` readings in agreement -- one spurious
     sample must never power the machine off mid-party. Recovery uses a wider
     band than the trigger so a battery hovering on a threshold does not flap.
+
+    Note this deliberately says nothing about charging vs discharging. The
+    MAX17043 is a voltage-only gauge with no current sense, and the HAT exposes
+    no charge-status register, so that can only ever be inferred -- not worth
+    the machinery for a one-word label.
     """
 
     OK = 'ok'
@@ -91,7 +95,6 @@ class BatteryPolicy:
     CRITICAL = 'critical'
 
     HYSTERESIS_PCT = 3.0
-    WINDOW = 5
 
     def __init__(self, warn_percent=20, critical_percent=5, consecutive=3):
         self.warn_percent = float(warn_percent)
@@ -100,7 +103,6 @@ class BatteryPolicy:
         self.level = self.OK
         self._candidate = None
         self._candidate_count = 0
-        self._readings = deque(maxlen=self.WINDOW)
 
     def _classify(self, percent):
         """Map a percentage to a level, biased toward staying where we are."""
@@ -127,7 +129,6 @@ class BatteryPolicy:
         if percent is None:
             return self.level
 
-        self._readings.append(reading)
         candidate = self._classify(percent)
 
         if candidate == self.level:
@@ -148,20 +149,3 @@ class BatteryPolicy:
             self._candidate = None
             self._candidate_count = 0
         return self.level
-
-    def trend(self):
-        """'charging', 'discharging' or 'steady', from the voltage trend.
-
-        The HAT exposes no charge-status line, so this is inferred. Voltage is
-        used rather than SoC because it moves first and monotonically.
-        """
-        if len(self._readings) < self.WINDOW:
-            return 'steady'
-        first = self._readings[0]['millivolts']
-        last = self._readings[-1]['millivolts']
-        delta = last - first
-        if delta > 10:
-            return 'charging'
-        if delta < -10:
-            return 'discharging'
-        return 'steady'

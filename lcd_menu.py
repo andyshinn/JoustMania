@@ -215,6 +215,13 @@ class ListPage(Page):
         return None
 
 
+def _bar(fraction, width):
+    """A [####----] gauge filling `width` columns including its brackets."""
+    cells = max(1, width - 2)
+    filled = max(0, min(cells, int(round(fraction * cells))))
+    return '[' + '#' * filled + '-' * (cells - filled) + ']'
+
+
 def _pad_between(left, right, width=COLS):
     """Left-align one string and right-align another on the same row."""
     left = str(left)
@@ -320,8 +327,7 @@ class NumericPage(Page):
     def render(self, ctx):
         low, high, _ = self._bounds(ctx)
         span = max(1, high - low)
-        filled = int(round((self.value - low) / span * self.BAR_WIDTH))
-        bar = '[' + '#' * filled + '-' * (self.BAR_WIDTH - filled) + ']'
+        bar = _bar((self.value - low) / span, self.BAR_WIDTH + 2)
         return self.title, _pad_between(bar, '{}{}'.format(self.value, self.unit))
 
     def on_button(self, btn, ctx):
@@ -438,7 +444,13 @@ class StatusPage(StaticPage):
 
 
 class BatteryPage(StaticPage):
-    """UPS charge. Hides itself entirely when no UPS HAT is present."""
+    """UPS charge. Hides itself entirely when no UPS HAT is present.
+
+    Shows only what the gauge actually measures -- state of charge and cell
+    voltage. It deliberately does not say whether the pack is charging: the
+    MAX17043 has no current sense and the HAT exposes no charge-status
+    register, so that could only ever be guessed at.
+    """
 
     title = 'Battery'
 
@@ -447,21 +459,17 @@ class BatteryPage(StaticPage):
 
     def render(self, ctx):
         percent = ctx.ups.get('percent')
-        millivolts = ctx.ups.get('millivolts')
         if percent is None:
             return 'Battery', 'No reading'
+        millivolts = ctx.ups.get('millivolts') or 0
         top = _pad_between('Batt {:>3.0f}%'.format(percent),
-                           '{:.2f}V'.format((millivolts or 0) / 1000.0))
-        trend = ctx.ups.get('trend', 'steady')
+                           '{:.2f}V'.format(millivolts / 1000.0))
         level = ctx.ups.get('level', 'ok')
         if level == 'critical':
-            bottom = 'CRITICAL - low!'
-        elif level == 'warn':
-            bottom = 'Low battery'
-        else:
-            bottom = {'charging': 'Charging',
-                      'discharging': 'On battery'}.get(trend, 'On battery')
-        return top, bottom
+            return top, 'CRITICAL - low!'
+        if level == 'warn':
+            return top, 'Low battery'
+        return top, _bar(percent / 100.0, COLS)
 
 
 class NetworkPage(StaticPage):
@@ -755,7 +763,6 @@ class LcdApp:
             'percent': reading['percent'],
             'millivolts': reading['millivolts'],
             'level': level,
-            'trend': self.policy.trend(),
         }
         try:
             self.ns.ups_status = dict(self._ups_state)
