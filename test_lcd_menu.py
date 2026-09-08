@@ -67,8 +67,10 @@ NET_DOWN = {'available': True, 'portal': False, 'primary_ip': None,
             'wifi': {'device': 'wlan0', 'state': 'disconnected',
                      'connection': None, 'ip': None},
             'ethernet': None}
-NET_UNAVAILABLE = {'available': False, 'portal': False, 'primary_ip': None,
-                   'wifi': None, 'ethernet': None}
+NET_UNAVAILABLE = {'available': False, 'reason': 'unavailable', 'portal': False,
+                   'primary_ip': None, 'wifi': None, 'ethernet': None}
+NET_NO_PACKAGE = {'available': False, 'reason': 'package', 'portal': False,
+                  'primary_ip': None, 'wifi': None, 'ethernet': None}
 
 
 def ctx(status=None, settings=None, ups=None, now=100.0, net=None, pin='4271'):
@@ -89,6 +91,7 @@ CTX_MATRIX = {
     'portal': ctx(MENU_STATUS, ups=UPS_OK, net=NET_PORTAL),
     'no_network': ctx(MENU_STATUS, ups=UPS_OK, net=NET_DOWN, pin=None),
     'no_networkmanager': ctx(MENU_STATUS, ups=UPS_OK, net=NET_UNAVAILABLE),
+    'no_nmcli_package': ctx(MENU_STATUS, ups=UPS_OK, net=NET_NO_PACKAGE),
 }
 
 
@@ -139,6 +142,21 @@ class PageContractTest(unittest.TestCase):
                     with self.subTest(page=type(page).__name__, ctx=name,
                                       button=button):
                         page.on_button(button, context)
+
+    def test_every_pushed_page_can_be_escaped_with_left(self):
+        """A page you can enter but not leave strands the user completely --
+        there is no other way off a screen on this hardware.
+
+        The carousel is the bottom of the stack and LowBatteryPage swallows
+        navigation on purpose, so both are excluded.
+        """
+        for page in all_pages():
+            if isinstance(page, (HomeCarousel, LowBatteryPage)):
+                continue
+            for name, context in CTX_MATRIX.items():
+                page.on_enter(context)
+                with self.subTest(page=type(page).__name__, ctx=name):
+                    self.assertIsInstance(page.on_button(LEFT, context), Pop)
 
     def test_backlight_is_none_or_a_valid_rgb_triple(self):
         for page in all_pages():
@@ -971,6 +989,16 @@ class PortalPageTest(unittest.TestCase):
         top, bottom = self.page().render(context)
         self.assertIn('NetworkMgr', bottom)
         self.assertIsNone(self.page().on_button(SELECT, context))
+
+    def test_points_at_setup_when_the_package_is_missing(self):
+        """By far the most common cause, and the fix is not guessable from
+        a generic "unavailable"."""
+        _, bottom = self.page().render(ctx(MENU_STATUS, net=NET_NO_PACKAGE))
+        self.assertIn('setup.sh', bottom)
+
+    def test_left_still_escapes_when_unavailable(self):
+        self.assertIsInstance(
+            self.page().on_button(LEFT, ctx(MENU_STATUS, net=NET_UNAVAILABLE)), Pop)
 
     def test_left_goes_back(self):
         self.assertIsInstance(

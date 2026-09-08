@@ -154,10 +154,19 @@ class Page:
 
 
 class StaticPage(Page):
-    """Two rendered lines, no input. Base for the home carousel."""
+    """Two rendered lines, no input. Base for the home carousel.
+
+    Left still has to go back: HomeCarousel handles its own buttons and never
+    delegates here, so this only ever fires for a static page that was *pushed*
+    onto the stack -- where having no handler at all strands the user with no
+    way out. (PageStack.pop is a no-op at depth 1, so this is safe either way.)
+    """
 
     def render(self, ctx):
         return self.title, ''
+
+    def on_button(self, btn, ctx):
+        return Pop() if btn == LEFT else None
 
 
 class Item:
@@ -517,7 +526,12 @@ class PortalPage(Page):
     def render(self, ctx):
         if not ctx.net.get('portal'):
             if not ctx.net.get('available', True):
-                return 'Captive portal', 'no NetworkMgr'
+                # Say what to do about it. "unavailable" on its own sends
+                # people hunting through NetworkManager when the actual cause
+                # is usually that setup.sh has not been re-run.
+                if ctx.net.get('reason') == 'package':
+                    return 'Portal: n/a', 'Run setup.sh'
+                return 'Portal: n/a', 'NetworkMgr down'
             return 'Portal: OFF', 'SELECT to start'
         ssid = ctx.setting('portal_ssid') or network_manager.DEFAULT_PORTAL_SSID
         top = 'AP: {}'.format(ssid)

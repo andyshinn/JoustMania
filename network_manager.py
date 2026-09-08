@@ -46,7 +46,10 @@ try:
     import nmcli as _nmcli
 except Exception:                                    # pragma: no cover
     _nmcli = None
-    logger.info("nmcli package not available; networking features disabled")
+    logger.warning(
+        "The 'nmcli' python package is not installed, so the captive portal "
+        "and network settings are disabled. Re-run setup.sh, or install it "
+        "into the virtualenv with: venv/bin/pip install nmcli")
 else:
     # The library prefixes every call with sudo by default. Under supervisor we
     # are already root, and sudo may not even be present in that environment.
@@ -94,18 +97,25 @@ def status():
     """Snapshot of both interfaces plus portal state. Never raises."""
     snapshot = {
         'available': False,
+        # Distinguishes "the python package is missing" (setup.sh has not been
+        # re-run) from "NetworkManager itself is not answering". They need
+        # completely different fixes, and 'unavailable' alone sends people
+        # looking in the wrong place.
+        'reason': None,
         'portal': False,
         'wifi': None,
         'ethernet': None,
         'primary_ip': None,
     }
     if _nmcli is None:
+        snapshot['reason'] = 'package'
         return snapshot
 
     try:
         devices = _nmcli.device.status()
     except Exception as exc:
-        logger.debug("nmcli device status failed: %s", exc)
+        logger.warning("nmcli is installed but not usable: %s", exc)
+        snapshot['reason'] = 'unavailable'
         return snapshot
 
     snapshot['available'] = True

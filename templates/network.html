@@ -74,8 +74,17 @@ window.addEventListener('load', function () {
 
     {% if not state.available %}
     <div class="info_box">
-        <p>NetworkManager is not available on this system, so network settings
-           cannot be changed here.</p>
+    {% if state.reason == 'package' %}
+        <p>The <code>nmcli</code> Python package is not installed, so network
+           settings cannot be changed here.</p>
+        <p>Re-run <code>sudo ./setup.sh</code>, or install it directly:</p>
+        <pre>sudo ~/JoustMania/venv/bin/pip install nmcli
+sudo ./restart_joustmania.sh</pre>
+    {% else %}
+        <p>NetworkManager is not responding, so network settings cannot be
+           changed here. Check it is running:</p>
+        <pre>systemctl status NetworkManager</pre>
+    {% endif %}
     </div>
     {% else %}
 
