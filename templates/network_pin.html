@@ -1,0 +1,19 @@
+{% extends "basic.html" %}
+
+{% block body %}
+<div class="info_box">
+    <h2>Enter the PIN</h2>
+    <p>The network settings are protected by a PIN shown on the device's
+       display. Look at the screen on the JoustMania box and type the number
+       it shows.</p>
+    {% if error %}
+    <p class="error">{{ error }}</p>
+    {% endif %}
+    <form action="/network" method="POST">
+        <p>{{ form.pin(size=8, inputmode="numeric", autocomplete="off", autofocus=true) }}</p>
+        <p><input type="submit" value="Unlock" /></p>
+    </form>
+    <p><small>No display attached? The PIN is written to
+       <code>/var/log/joustmania-out.log</code> each time JoustMania starts.</small></p>
+</div>
+{% endblock %}

@@ -22,6 +22,7 @@ import time
 from dataclasses import dataclass, field
 
 import lcd_hat
+import network_manager
 import ups_hat
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,10 @@ DEFAULTS = {
     'ups_warn_percent': 20,
     'ups_critical_percent': 5,
     'ups_auto_shutdown': True,
+    'portal_ssid': network_manager.DEFAULT_PORTAL_SSID,
+    'portal_password': network_manager.DEFAULT_PORTAL_PASSWORD,
+    'portal_auto_fallback': True,
+    'portal_fallback_delay_secs': 90,
 }
 
 # Bounds for every numeric setting the LCD can edit: (min, max, step).
@@ -63,6 +68,7 @@ NUMERIC_RANGES = {
     'lcd_idle_dim_secs': (0, 900, 30),
     'ups_warn_percent': (5, 50, 5),
     'ups_critical_percent': (1, 25, 1),
+    'portal_fallback_delay_secs': (30, 600, 30),
 }
 
 
@@ -77,6 +83,11 @@ class Ctx:
     settings: dict = field(default_factory=dict)
     ups: dict = field(default_factory=dict)
     now: float = 0.0
+    # Published by the network monitor process; empty until its first poll
+    # lands, and whenever NetworkManager is unavailable.
+    net: dict = field(default_factory=dict)
+    # The admin page's PIN, owned by piparty. None when it has not been set.
+    pin: object = None
 
     @property
     def game_status(self):
@@ -484,7 +495,64 @@ class NetworkPage(StaticPage):
     title = 'Network'
 
     def render(self, ctx):
-        return 'Admin page at', _local_ip() or 'no network'
+        if ctx.net.get('portal'):
+            # In portal mode the socket trick below reports nothing useful --
+            # there is no default route -- and the hostname is what people are
+            # told to type anyway.
+            return 'Portal active', network_manager.PORTAL_HOSTNAME
+        address = ctx.net.get('primary_ip') or _local_ip()
+        return 'Admin page at', address or 'no network'
+
+
+class PortalPage(Page):
+    """Raise the setup access point so a phone can configure the network.
+
+    This exists because the alternative is typing a venue's wifi password on a
+    16x2 panel with five buttons. Here you press one button, join the AP from a
+    phone, and the config page opens by itself.
+    """
+
+    title = 'Captive portal'
+
+    def render(self, ctx):
+        if not ctx.net.get('portal'):
+            if not ctx.net.get('available', True):
+                return 'Captive portal', 'no NetworkMgr'
+            return 'Portal: OFF', 'SELECT to start'
+        ssid = ctx.setting('portal_ssid') or network_manager.DEFAULT_PORTAL_SSID
+        top = 'AP: {}'.format(ssid)
+        # The PIN is what the phone asks for the moment the page opens, so it
+        # belongs on the same screen rather than one menu away.
+        bottom = 'PIN {}'.format(ctx.pin) if ctx.pin else network_manager.PORTAL_HOSTNAME
+        return top[:COLS], bottom[:COLS]
+
+    def on_button(self, btn, ctx):
+        if btn == LEFT:
+            return Pop()
+        if btn in (SELECT, RIGHT):
+            if not ctx.net.get('available', True):
+                return None
+            if ctx.net.get('portal'):
+                return Push(ConfirmPage(
+                    'Stop portal?',
+                    lambda: Command({'command': 'lcd_portal_off'})))
+            return Push(ConfirmPage(
+                'Start portal?',
+                lambda: Command({'command': 'lcd_portal_on'})))
+        return None
+
+
+class PinPage(StaticPage):
+    """The admin page's PIN, readable only by standing at the machine.
+
+    That is the whole point: it is an out-of-band channel the network cannot
+    reach, so physical access is the credential and nothing is stored.
+    """
+
+    title = 'Web PIN'
+
+    def render(self, ctx):
+        return 'Admin page PIN', str(ctx.pin) if ctx.pin else 'not set'
 
 
 class ControllersPage(StaticPage):
@@ -587,6 +655,8 @@ def _settings_page():
         NumericItem('Warn at', 'ups_warn_percent', '%'),
         NumericItem('Shut at', 'ups_critical_percent', '%'),
         ToggleItem('AutoShut', 'ups_auto_shutdown'),
+        ToggleItem('AutoPortal', 'portal_auto_fallback'),
+        NumericItem('Portal in', 'portal_fallback_delay_secs', 's'),
     ])
 
 
@@ -599,6 +669,25 @@ def _power_page():
     ])
 
 
+class _PortalItem(SubmenuItem):
+    """Shows ON/OFF on the menu row itself, so the state is visible at a glance."""
+
+    def __init__(self):
+        super().__init__('Portal', PortalPage)
+
+    def value_text(self, ctx):
+        if not ctx.net.get('available', True):
+            return 'n/a'
+        return 'ON' if ctx.net.get('portal') else 'OFF'
+
+
+def _network_page():
+    return ListPage('Network', [
+        _PortalItem(),
+        SubmenuItem('Web PIN', PinPage),
+    ])
+
+
 def build_main_menu():
     return ListPage('Main Menu', [
         SubmenuItem('Game Mode', _game_mode_page),
@@ -607,6 +696,7 @@ def build_main_menu():
                    visible_when=lambda ctx: not ctx.in_game),
         ActionItem('Kill Game', {'command': 'killgame'},
                    visible_when=lambda ctx: ctx.in_game),
+        SubmenuItem('Network', _network_page),
         SubmenuItem('Settings', _settings_page),
         SubmenuItem('Power', _power_page),
     ])
@@ -874,8 +964,18 @@ class LcdApp:
             settings = dict(self.ns.settings or {})
         except Exception:
             settings = {}
+        # Published by the network monitor process, which runs whether or not
+        # a HAT is attached; empty until its first poll lands.
+        try:
+            net = dict(self.ns.network_status or {})
+        except Exception:
+            net = {}
+        try:
+            pin = self.ns.network_pin
+        except Exception:
+            pin = None
         return Ctx(status=status, settings=settings,
-                   ups=dict(self._ups_state), now=now)
+                   ups=dict(self._ups_state), now=now, net=net, pin=pin)
 
     # -- actions -----------------------------------------------------------
 

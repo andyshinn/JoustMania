@@ -180,6 +180,29 @@ To connect to the game, go to http://joust.mania in your web browser, you may ha
 sudo ./disable_ap.sh
 ```
 
+Network Settings and the Captive Portal
+---------------------------------
+Rather than editing config files over SSH, you can configure the Pi's network
+from a phone. On the LCD HAT, choose **Network > Portal** and confirm. The Pi
+brings up a setup access point (SSID `JoustMania`, password `joustpass` by
+default); join it from a phone and the settings page should open by itself.
+From there you can scan for and join a Wi-Fi network, forget saved networks,
+and set the wired connection to DHCP or a static address.
+
+If the Pi has no address on any interface 90 seconds after boot, it starts the
+portal on its own, so a Pi taken to a new venue is always reachable. The portal
+connection is deliberately temporary: rebooting always returns the Pi to
+normal client mode. Both behaviours can be changed under Admin Settings.
+
+The network page is protected by a four digit PIN shown on the LCD (**Network >
+Web PIN**), so configuring the network requires physical access to the machine.
+The PIN changes every time JoustMania starts. If no LCD is attached, it is
+written to `/var/log/joustmania-out.log` at startup.
+
+This is separate from `enable_ap.sh` above, which sets up a *permanent* access
+point for running the game with no other network. The two can be used
+independently.
+
 
 Custom Music
 ---------------------------------

@@ -7,6 +7,7 @@ here without an LCD, an I2C bus, or a running JoustMania.
 import sys
 import types
 import unittest
+import unittest.mock
 
 # common.py imports psmoveapi, which only exists on the Pi. The LCD front-end
 # only needs the Games enum out of common, so stub the binding rather than
@@ -46,15 +47,34 @@ SETTINGS = {
     'lcd_backlight_ambient': True, 'play_audio': True, 'play_instructions': True,
     'color_lock': False, 'random_teams': True, 'ups_warn_percent': 20,
     'ups_critical_percent': 5, 'ups_auto_shutdown': True,
+    'portal_ssid': 'JoustMania', 'portal_password': 'joustpass',
+    'portal_auto_fallback': True, 'portal_fallback_delay_secs': 90,
 }
 
 UPS_OK = {'percent': 87.0, 'millivolts': 4020, 'level': 'ok'}
 UPS_CRITICAL = {'percent': 3.0, 'millivolts': 3400, 'level': 'critical'}
 
 
-def ctx(status=None, settings=None, ups=None, now=100.0):
+NET_CLIENT = {'available': True, 'portal': False, 'primary_ip': '192.168.1.40',
+              'wifi': {'device': 'wlan0', 'state': 'connected',
+                       'connection': 'HomeNet', 'ip': '192.168.1.40'},
+              'ethernet': None}
+NET_PORTAL = {'available': True, 'portal': True, 'primary_ip': '10.42.0.1',
+              'wifi': {'device': 'wlan0', 'state': 'connected',
+                       'connection': 'JoustPortal', 'ip': '10.42.0.1'},
+              'ethernet': None}
+NET_DOWN = {'available': True, 'portal': False, 'primary_ip': None,
+            'wifi': {'device': 'wlan0', 'state': 'disconnected',
+                     'connection': None, 'ip': None},
+            'ethernet': None}
+NET_UNAVAILABLE = {'available': False, 'portal': False, 'primary_ip': None,
+                   'wifi': None, 'ethernet': None}
+
+
+def ctx(status=None, settings=None, ups=None, now=100.0, net=None, pin='4271'):
     return Ctx(status=dict(status or {}), settings=dict(settings or SETTINGS),
-               ups=dict(ups or {}), now=now)
+               ups=dict(ups or {}), now=now,
+               net=dict(NET_CLIENT if net is None else net), pin=pin)
 
 
 # Every meaningful world-state a page might be rendered in.
@@ -66,6 +86,9 @@ CTX_MATRIX = {
     'ups_critical': ctx(MENU_STATUS, ups=UPS_CRITICAL),
     'empty_status': ctx({}, ups=UPS_OK),
     'empty_settings': Ctx(status={}, settings={}, ups={}, now=0.0),
+    'portal': ctx(MENU_STATUS, ups=UPS_OK, net=NET_PORTAL),
+    'no_network': ctx(MENU_STATUS, ups=UPS_OK, net=NET_DOWN, pin=None),
+    'no_networkmanager': ctx(MENU_STATUS, ups=UPS_OK, net=NET_UNAVAILABLE),
 }
 
 
@@ -868,3 +891,138 @@ class ConfirmPageRenderTest(unittest.TestCase):
         menu.on_enter(CTX_MATRIX['menu'])
         top, _ = menu.render(CTX_MATRIX['menu'])
         self.assertIn('/', top)
+
+
+class NetworkPageTest(unittest.TestCase):
+    """The home-carousel screen that answers "where do I browse?"."""
+
+    def render(self, net, **kwargs):
+        return lcd_menu.NetworkPage().render(ctx(MENU_STATUS, net=net, **kwargs))
+
+    def test_shows_the_lan_address_when_connected(self):
+        _, bottom = self.render(NET_CLIENT)
+        self.assertEqual(bottom, '192.168.1.40')
+
+    def test_shows_the_hostname_in_portal_mode(self):
+        """The 8.8.8.8 socket trick reports nothing useful with no default
+        route, which is exactly the case here -- and joust.mania is what
+        people are told to type anyway."""
+        top, bottom = self.render(NET_PORTAL)
+        self.assertIn('Portal', top)
+        self.assertEqual(bottom, lcd_menu.network_manager.PORTAL_HOSTNAME)
+
+    def test_falls_back_to_the_socket_trick_without_networkmanager(self):
+        # Windows and the Steam Deck have no nmcli but do have an address.
+        with unittest.mock.patch.object(lcd_menu, '_local_ip',
+                                        return_value='10.1.2.3'):
+            _, bottom = self.render(NET_UNAVAILABLE)
+        self.assertEqual(bottom, '10.1.2.3')
+
+    def test_says_so_when_there_is_no_network_at_all(self):
+        with unittest.mock.patch.object(lcd_menu, '_local_ip', return_value=None):
+            _, bottom = self.render(NET_DOWN)
+        self.assertEqual(bottom, 'no network')
+
+
+class PortalPageTest(unittest.TestCase):
+    def page(self):
+        return lcd_menu.PortalPage()
+
+    def test_offers_to_start_when_off(self):
+        top, bottom = self.page().render(ctx(MENU_STATUS, net=NET_DOWN))
+        self.assertIn('OFF', top)
+        self.assertIn('SELECT', bottom)
+
+    def test_shows_ssid_and_pin_when_running(self):
+        """Both halves of what a phone needs, on the one screen you are
+        looking at when you need them."""
+        top, bottom = self.page().render(ctx(MENU_STATUS, net=NET_PORTAL))
+        self.assertIn('JoustMania', top)
+        self.assertIn('4271', bottom)
+
+    def test_falls_back_to_the_hostname_with_no_pin(self):
+        _, bottom = self.page().render(
+            ctx(MENU_STATUS, net=NET_PORTAL, pin=None))
+        self.assertEqual(bottom, lcd_menu.network_manager.PORTAL_HOSTNAME)
+
+    def test_start_is_guarded_by_a_confirm(self):
+        context = ctx(MENU_STATUS, net=NET_DOWN)
+        action = self.page().on_button(SELECT, context)
+        self.assertIsInstance(action, Push)
+
+        confirm = action.page
+        confirm.on_enter(context)
+        self.assertEqual(confirm.index, 0)                    # defaults to No
+        confirm.on_button(DOWN, context)
+        actions = confirm.on_button(SELECT, context)
+        self.assertEqual(actions[0], Command({'command': 'lcd_portal_on'}))
+
+    def test_stop_is_offered_when_already_running(self):
+        context = ctx(MENU_STATUS, net=NET_PORTAL)
+        confirm = self.page().on_button(SELECT, context).page
+        confirm.on_enter(context)
+        confirm.on_button(DOWN, context)
+        actions = confirm.on_button(SELECT, context)
+        self.assertEqual(actions[0], Command({'command': 'lcd_portal_off'}))
+
+    def test_does_nothing_without_networkmanager(self):
+        # Offering a control that cannot work is worse than showing why.
+        context = ctx(MENU_STATUS, net=NET_UNAVAILABLE)
+        top, bottom = self.page().render(context)
+        self.assertIn('NetworkMgr', bottom)
+        self.assertIsNone(self.page().on_button(SELECT, context))
+
+    def test_left_goes_back(self):
+        self.assertIsInstance(
+            self.page().on_button(LEFT, ctx(MENU_STATUS, net=NET_DOWN)), Pop)
+
+
+class PinPageTest(unittest.TestCase):
+    def test_shows_the_pin(self):
+        _, bottom = lcd_menu.PinPage().render(ctx(MENU_STATUS))
+        self.assertEqual(bottom, '4271')
+
+    def test_says_so_when_unset(self):
+        _, bottom = lcd_menu.PinPage().render(ctx(MENU_STATUS, pin=None))
+        self.assertEqual(bottom, 'not set')
+
+
+class NetworkMenuTest(unittest.TestCase):
+    def submenu(self, context):
+        menu = build_main_menu()
+        item = next(i for i in menu.items if i.label == 'Network')
+        return item.activate(context).page
+
+    def test_main_menu_has_a_network_entry(self):
+        labels = [item.label for item in build_main_menu().items]
+        self.assertIn('Network', labels)
+
+    def test_portal_state_is_visible_without_entering_the_page(self):
+        page = self.submenu(CTX_MATRIX['menu'])
+        portal_item = page.items[0]
+        self.assertEqual(portal_item.value_text(ctx(MENU_STATUS, net=NET_PORTAL)), 'ON')
+        self.assertEqual(portal_item.value_text(ctx(MENU_STATUS, net=NET_DOWN)), 'OFF')
+        self.assertEqual(
+            portal_item.value_text(ctx(MENU_STATUS, net=NET_UNAVAILABLE)), 'n/a')
+
+
+class NetworkCtxTest(unittest.TestCase):
+    """LcdApp reads what the monitor process publishes rather than polling."""
+
+    def build(self, **attrs):
+        ns = types.SimpleNamespace(status=MENU_STATUS, settings=SETTINGS,
+                                   **attrs)
+        return LcdApp(command_queue=None, ns=ns, lcd=None, keypad=None)
+
+    def test_reads_published_network_state_and_pin(self):
+        app = self.build(network_status=NET_PORTAL, network_pin='1234')
+        context = app.build_ctx(now=1.0)
+        self.assertTrue(context.net['portal'])
+        self.assertEqual(context.pin, '1234')
+
+    def test_survives_a_namespace_without_them(self):
+        # The monitor may not have published yet, and a standalone WebUI
+        # namespace never sets these at all.
+        context = self.build().build_ctx(now=1.0)
+        self.assertEqual(context.net, {})
+        self.assertIsNone(context.pin)

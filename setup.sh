@@ -55,7 +55,9 @@ setup() {
 
     echo "installing virtual environment dependencies"
 
-    $PYTHON -m pip install --ignore-installed flask Flask-WTF pyalsaaudio pydub pyyaml dbus-python python-dotenv smbus2
+    # nmcli: typed wrapper over the NetworkManager CLI, used by the captive
+    # portal and the network settings page. Pure python, no dependencies.
+    $PYTHON -m pip install --ignore-installed flask Flask-WTF pyalsaaudio pydub pyyaml dbus-python python-dotenv smbus2 nmcli
 
     # audioop is not available on python >= 3.13
     $PYTHON -m pip install --ignore-installed audioop-lts || exit -1

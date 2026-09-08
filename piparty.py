@@ -60,10 +60,12 @@ if platform == "linux" or platform == "linux2":
 elif "win" in platform:
     import win_jm_dbus as jm_dbus
     import win_pair as pair
+import secrets
 import subprocess
 import controller_process
 import update
 import lcd_menu
+import network_manager
 import system_power
 
 # Load the environment shipped beside the source or frozen executable.
@@ -357,6 +359,14 @@ class Menu():
         self.ns.settings = dict()
         self.ns.battery_status = dict()
         self.ns.ups_status = dict()
+        self.ns.network_status = dict()
+        # Gate for the network settings page. Deliberately in memory only and
+        # regenerated every start: the LCD is an out-of-band channel, so
+        # physical access is the credential and nothing has to be stored.
+        self.ns.network_pin = '{:04d}'.format(secrets.randbelow(10000))
+        # Logged so a Pi with no LCD attached is not locked out of its own
+        # admin page. This is the only place the PIN is written down.
+        logger.info("Network settings PIN for this session: %s", self.ns.network_pin)
         self.command_from_web = ''
         self.initialize_settings()
         self.update_settings_file() # Update settings from joustmania.yaml
@@ -398,6 +408,16 @@ class Menu():
             daemon=True,
         )
         self.lcd_proc.start()
+
+        # Network state + captive-portal auto-fallback. Separate from the LCD
+        # process because that one exits with no HAT attached, and a headless
+        # Pi is exactly where an automatic portal matters most.
+        self.network_proc = Process(
+            target=network_manager.start_network_monitor,
+            args=(self.command_queue, self.ns),
+            daemon=True,
+        )
+        self.network_proc.start()
 
         self.move_count = self.get_move_count() # Number of connected moves used in webui
 
@@ -966,6 +986,11 @@ class Menu():
             'ups_warn_percent': 20,
             'ups_critical_percent': 5,
             'ups_auto_shutdown': True,
+            # Captive portal (see network_manager.py)
+            'portal_ssid': network_manager.DEFAULT_PORTAL_SSID,
+            'portal_password': network_manager.DEFAULT_PORTAL_PASSWORD,
+            'portal_auto_fallback': True,
+            'portal_fallback_delay_secs': 90,
         })
         try:
             #if anything fails during the settings file load, ignore file and stick with defaults
@@ -1044,6 +1069,8 @@ class Menu():
             elif command == 'lcd_reset_bt':
                 logger.info("LCD requested a Bluetooth reset")
                 self.run_bluetooth_reset()
+            elif command in ('lcd_portal_on', 'lcd_portal_off'):
+                self.run_portal_toggle(command)
             elif command in ('lcd_poweroff', 'lcd_reboot'):
                 action = 'poweroff' if command == 'lcd_poweroff' else 'reboot'
                 logger.info("LCD requested %s", action)
@@ -1051,6 +1078,24 @@ class Menu():
                         args=(action,)).start()
             else:
                 self.command_from_web = command
+
+    def run_portal_toggle(self, command):
+        """Raise or drop the captive portal in a separate process.
+
+        Bringing up a hotspot takes several seconds and reconfigures the
+        interface the WebUI is served on, so it must not run on the menu loop.
+        """
+        action = 'start' if command == 'lcd_portal_on' else 'stop'
+        settings = self.ns.settings
+        logger.info("Captive portal %s requested", action)
+        Process(
+            target=network_manager.portal_toggle,
+            args=(action,
+                  settings.get('portal_ssid', network_manager.DEFAULT_PORTAL_SSID),
+                  settings.get('portal_password',
+                               network_manager.DEFAULT_PORTAL_PASSWORD)),
+            daemon=True,
+        ).start()
 
     def run_bluetooth_reset(self):
         """Clear saved PS Move registrations and restart, as the WebUI does.

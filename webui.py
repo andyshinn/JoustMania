@@ -1,9 +1,14 @@
 from multiprocessing import Queue, Manager, Process
+import os
+import secrets
 import socket
 import subprocess
+import time
 from pathlib import Path
-from flask import Flask, render_template, request, redirect, url_for, flash
-from wtforms import Form, SelectField, SelectMultipleField, BooleanField, widgets, FieldList
+from flask import (Flask, render_template, request, redirect, url_for, flash,
+                   session, jsonify)
+from wtforms import (Form, SelectField, SelectMultipleField, BooleanField,
+                     StringField, PasswordField, widgets, FieldList)
 from os import environ
 from sys import platform
 import common, colors
@@ -12,6 +17,7 @@ import yaml
 import logging
 import runtime_platform
 import bluetooth_diagnostics
+import network_manager
 from system_power import request_system_power
 
 if platform == "linux" or platform == "linux2":
@@ -24,6 +30,36 @@ else:
 
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
+
+logger = logging.getLogger(__name__)
+
+# The PIN gate protects /network only. 10,000 combinations falls to a script in
+# seconds, so the lockout is what actually does the work here.
+PIN_MAX_ATTEMPTS = 5
+PIN_LOCKOUT_SECS = 60
+
+# URLs each OS fetches to decide whether a network is "working". Answering
+# these with a redirect is what makes a phone pop the setup page by itself.
+#
+# The response each one expects when the network *is* working matters too: we
+# claim these paths unconditionally, and they used to 404. A 404 reads as "a
+# portal is intercepting me", which would pop a spurious sign-in browser for
+# anyone using the permanent access point from enable_ap.sh. So when our portal
+# is off, answer exactly what a working network answers.
+_HTML_SUCCESS = ('<HTML><HEAD><TITLE>Success</TITLE></HEAD>'
+                 '<BODY>Success</BODY></HTML>')
+CAPTIVE_PROBE_RESPONSES = {
+    '/generate_204': ('', 204),                             # Android
+    '/gen_204': ('', 204),
+    '/hotspot-detect.html': (_HTML_SUCCESS, 200),           # iOS, macOS
+    '/library/test/success.html': (_HTML_SUCCESS, 200),
+    '/ncsi.txt': ('Microsoft NCSI', 200),                   # Windows
+    '/connecttest.txt': ('Microsoft Connect Test', 200),
+    '/redirect': ('', 204),
+    '/canonical.html': (_HTML_SUCCESS, 200),                # Firefox
+    '/success.txt': ('success\n', 200),
+}
+CAPTIVE_PROBE_PATHS = tuple(CAPTIVE_PROBE_RESPONSES)
 
 
 def web_port():
@@ -97,11 +133,54 @@ class SettingsForm(Form):
                                        choices=[(pct,'{}%'.format(pct)) for pct in range(1,26)],coerce=int)
     ups_auto_shutdown = BooleanField('Shut down automatically on critical battery')
 
+    # Captive portal. SSID/password are free text because they are genuinely
+    # arbitrary; everything else stays a SelectField per the note above.
+    portal_ssid = StringField('Setup access point name')
+    portal_password = StringField('Setup access point password')
+    portal_auto_fallback = BooleanField(
+        'Start the setup access point automatically when there is no network')
+    portal_fallback_delay_secs = SelectField(
+        'Wait this long before starting it',
+        choices=[(30,'30 seconds'),(60,'1 minute'),(90,'90 seconds'),
+                 (120,'2 minutes'),(300,'5 minutes'),(600,'10 minutes')],
+        coerce=int)
+
+
+class NetworkPinForm(Form):
+    pin = PasswordField('PIN')
+
+
+class WifiForm(Form):
+    """SSID is a select populated from a live scan, with a text box beside it
+    for hidden networks -- picking from a list is far less error-prone on a
+    phone than retyping an SSID."""
+    ssid = SelectField('Network', choices=[], coerce=str)
+    hidden_ssid = StringField('Or a hidden network')
+    password = PasswordField('Password')
+
+
+class EthernetForm(Form):
+    method = SelectField('Wired addressing',
+                         choices=[('auto', 'Automatic (DHCP)'),
+                                  ('manual', 'Static address')], coerce=str)
+    address = StringField('Address with prefix, e.g. 192.168.1.50/24')
+    gateway = StringField('Gateway')
+    dns = StringField('DNS server')
+
+
 class WebUI():
     def __init__(self, command_queue=Queue(), ns=None, controller_manager_instance=None):
 
         self.app = Flask(__name__)
-        self.app.secret_key="MAGFest is a donut"
+        # Was a hardcoded string, which is published in this repo -- anyone
+        # could forge a signed session cookie and walk straight past the PIN
+        # gate below. The only cost of randomising it is that flash() messages
+        # do not survive a restart.
+        self.app.secret_key = os.urandom(32)
+        self._pin_attempts = 0
+        self._pin_locked_until = 0.0
+        self._portal_checked_at = 0.0
+        self._portal_active = False
         self.command_queue = command_queue
         self.controller_manager = controller_manager_instance
         if ns == None:
@@ -149,6 +228,19 @@ class WebUI():
         self.app.add_url_rule('/reboot8675309','reboot',self.reboot)
         self.app.add_url_rule('/shutdown8675309','shutdown',self.shutdown)
         self.app.add_url_rule('/shutdown','shutdown_lastscreen',self.shutdown_lastscreen)
+        self.app.add_url_rule('/network','network',self.network, methods=['GET','POST'])
+        self.app.add_url_rule('/network/scan','network_scan',self.network_scan)
+        self.app.add_url_rule('/network/wifi','network_wifi',self.network_wifi, methods=['POST'])
+        self.app.add_url_rule('/network/forget','network_forget',self.network_forget, methods=['POST'])
+        self.app.add_url_rule('/network/ethernet','network_ethernet',self.network_ethernet, methods=['POST'])
+        self.app.add_url_rule('/network/portal','network_portal',self.network_portal, methods=['POST'])
+
+        # The captive-portal pieces. Both are no-ops unless the portal is up,
+        # so nothing about normal LAN operation changes.
+        for path in CAPTIVE_PROBE_PATHS:
+            self.app.add_url_rule(path, 'probe_' + path.strip('/').replace('.', '_'),
+                                  self.captive_probe)
+        self.app.before_request(self.captive_redirect)
 
 
     def web_loop(self):
@@ -412,6 +504,12 @@ class WebUI():
                 ups_enabled = self.ns.settings.get('ups_enabled', 'auto'),
                 ups_warn_percent = self.ns.settings.get('ups_warn_percent', 20),
                 ups_critical_percent = self.ns.settings.get('ups_critical_percent', 5),
+                portal_ssid = self.ns.settings.get(
+                    'portal_ssid', network_manager.DEFAULT_PORTAL_SSID),
+                portal_password = self.ns.settings.get(
+                    'portal_password', network_manager.DEFAULT_PORTAL_PASSWORD),
+                portal_fallback_delay_secs = self.ns.settings.get(
+                    'portal_fallback_delay_secs', 90),
             )
             return render_template('settings.html', form=settingsForm, settings=self.ns.settings)
 
@@ -456,6 +554,188 @@ class WebUI():
         else:
             flash('Duplicate color lock colors! Other settings saved.')
 
+    # -- captive portal ----------------------------------------------------
+
+    def portal_is_active(self):
+        """Cached portal check.
+
+        before_request runs on every request, and shelling out to nmcli each
+        time would make the whole UI crawl.
+        """
+        now = time.time()
+        if now - self._portal_checked_at > 2.0:
+            self._portal_checked_at = now
+            self._portal_active = network_manager.portal_active()
+        return self._portal_active
+
+    def captive_probe(self):
+        """Answer an OS connectivity probe.
+
+        With the portal up, redirect: seeing anything other than the expected
+        success response is what makes the phone decide it is behind a portal
+        and open the page. With the portal down, answer normally so we do not
+        claim to be a portal we are not.
+        """
+        if self.portal_is_active():
+            return redirect(self.portal_url(), code=302)
+        return CAPTIVE_PROBE_RESPONSES.get(request.path, ('', 204))
+
+    def portal_url(self):
+        port = web_port()
+        suffix = "" if port == 80 else ":{}".format(port)
+        return "http://{}{}/network".format(network_manager.PORTAL_HOSTNAME, suffix)
+
+    def captive_redirect(self):
+        """Send stray requests to the setup page while the portal is up."""
+        if not self.portal_is_active():
+            return None
+        path = request.path
+        if path.startswith('/network') or path.startswith('/static'):
+            return None
+        if path in CAPTIVE_PROBE_PATHS:
+            return None                      # its own handler deals with it
+        return redirect(self.portal_url(), code=302)
+
+    # -- network settings --------------------------------------------------
+
+    def network_pin(self):
+        try:
+            return self.ns.network_pin
+        except Exception:
+            return None
+
+    def pin_required(self):
+        """Gate for /network only. Returns a response, or None to continue.
+
+        The PIN is shown on the LCD, so physical access to the machine is the
+        credential. That is a real control precisely because it is not
+        reachable over the network.
+        """
+        pin = self.network_pin()
+        if not pin:
+            # Nothing to check against (standalone WebUI, or piparty never set
+            # one). Failing open here beats locking someone out of their Pi.
+            return None
+        if session.get('network_authed'):
+            return None
+
+        error = None
+        if time.time() < self._pin_locked_until:
+            error = 'Too many attempts. Try again in a minute.'
+        elif request.method == 'POST' and 'pin' in request.form:
+            submitted = NetworkPinForm(request.form).data['pin'] or ''
+            if secrets.compare_digest(str(submitted), str(pin)):
+                session['network_authed'] = True
+                self._pin_attempts = 0
+                return None
+            self._pin_attempts += 1
+            if self._pin_attempts >= PIN_MAX_ATTEMPTS:
+                self._pin_locked_until = time.time() + PIN_LOCKOUT_SECS
+                self._pin_attempts = 0
+                # Rotating on lockout means a captured PIN also stops working.
+                self.rotate_pin()
+                error = 'Too many attempts. A new PIN is on the display.'
+            else:
+                error = 'That PIN was not correct.'
+
+        return render_template('network_pin.html',
+                               form=NetworkPinForm(), error=error), 401
+
+    def rotate_pin(self):
+        try:
+            new_pin = '{:04d}'.format(secrets.randbelow(10000))
+            self.ns.network_pin = new_pin
+            logger.warning("Network PIN rotated after failed attempts: %s", new_pin)
+        except Exception:
+            logger.exception("Could not rotate the network PIN")
+
+    def network(self):
+        gate = self.pin_required()
+        if gate is not None:
+            return gate
+
+        state = network_manager.status()
+        ethernet = state.get('ethernet') or {}
+        # Show the method actually in force. Defaulting the form to DHCP when
+        # a static address is configured would invite someone to "save" the
+        # page and silently wipe it.
+        method = network_manager.connection_method(ethernet.get('connection'))
+        return render_template(
+            'network.html',
+            state=state,
+            saved=network_manager.saved_connections(),
+            wifi_form=WifiForm(),
+            ethernet_form=EthernetForm(
+                method='manual' if method == 'manual' else 'auto'),
+            portal_ssid=self.ns.settings.get(
+                'portal_ssid', network_manager.DEFAULT_PORTAL_SSID),
+            ethernet_connection=ethernet.get('connection'),
+        )
+
+    def network_scan(self):
+        gate = self.pin_required()
+        if gate is not None:
+            return gate
+        # rescan only on an explicit refresh: a forced sweep takes seconds and
+        # briefly disrupts an existing association.
+        rescan = request.args.get('rescan') == '1'
+        return jsonify({'networks': network_manager.scan(rescan=rescan)})
+
+    def network_wifi(self):
+        gate = self.pin_required()
+        if gate is not None:
+            return gate
+
+        data = WifiForm(request.form).data
+        ssid = (data.get('hidden_ssid') or '').strip() or data.get('ssid')
+        password = data.get('password')
+        if not ssid:
+            flash('Pick a network, or type the name of a hidden one.')
+            return redirect(url_for('network'))
+
+        # Joining takes the AP down, so the browser loses this connection
+        # mid-request. Detach it and answer first, exactly as the Bluetooth
+        # reset does, or the user never learns where to reconnect.
+        target = network_manager.status().get('primary_ip')
+        Process(target=_apply_wifi, args=(ssid, password), daemon=True).start()
+        return render_template('network_applying.html',
+                               ssid=ssid, previous_ip=target)
+
+    def network_forget(self):
+        gate = self.pin_required()
+        if gate is not None:
+            return gate
+        ok, message = network_manager.forget(request.form.get('name', ''))
+        flash(message)
+        return redirect(url_for('network'))
+
+    def network_ethernet(self):
+        gate = self.pin_required()
+        if gate is not None:
+            return gate
+        data = EthernetForm(request.form).data
+        ok, message = network_manager.set_ethernet(
+            data.get('method'), data.get('address'),
+            data.get('gateway'), data.get('dns'))
+        flash(message)
+        return redirect(url_for('network'))
+
+    def network_portal(self):
+        gate = self.pin_required()
+        if gate is not None:
+            return gate
+        command = ('lcd_portal_off' if network_manager.portal_active()
+                   else 'lcd_portal_on')
+        # Routed through the same queue the LCD uses, so piparty stays the one
+        # place that owns starting and stopping the portal.
+        self.command_queue.put({'command': command})
+        self._portal_checked_at = 0.0            # force a fresh read next time
+        flash('Captive portal is starting.' if command == 'lcd_portal_on'
+              else 'Captive portal is stopping.')
+        return render_template('network_applying.html', ssid=None,
+                               previous_ip=None,
+                               portal=(command == 'lcd_portal_on'))
+
     #@app.route('/rand<num_teams>')
     def randomize_teams(self,num_teams):
         if num_teams not in '234':
@@ -465,6 +745,17 @@ class WebUI():
             team_colors = colors.generate_team_colors(num_teams)
             team_colors = [color.name for color in team_colors]
             return str(team_colors).replace("'",'"')#JSON is dumb and demands double quotes
+
+def _apply_wifi(ssid, password):
+    """Join a network after the browser has been answered.
+
+    A short delay lets the response reach the phone before the access point it
+    arrived over disappears.
+    """
+    time.sleep(1)
+    ok, message = network_manager.join_wifi(ssid, password)
+    logger.info("Wifi join %s: %s", 'succeeded' if ok else 'failed', message)
+
 
 def start_web(command_queue, ns, controller_manager_instance=None):
     import setproctitle

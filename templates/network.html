@@ -1,0 +1,177 @@
+{% extends "basic.html" %}
+
+{% block header %}
+<style>
+    .settings-section { margin-bottom: 1.5em; }
+    .net-status { font-family: monospace; }
+    .net-row { margin: 0.4em 0; }
+    #wifi_list { min-width: 12em; }
+    .muted { color: #888; }
+</style>
+<script type="text/javascript">
+function renderNetworks(networks) {
+    var select = document.getElementById('wifi_list');
+    var current = select.value;
+    select.innerHTML = '';
+    if (!networks.length) {
+        var none = document.createElement('option');
+        none.textContent = 'No networks found';
+        none.value = '';
+        select.appendChild(none);
+        return;
+    }
+    networks.forEach(function (net) {
+        var option = document.createElement('option');
+        // Security is worth showing: an open network needs no password, and a
+        // blank box on a WPA network is the most common way a join fails.
+        var lock = net.security ? ' · ' + net.security : ' · open';
+        option.value = net.ssid;
+        option.textContent = net.ssid + ' (' + net.signal + '%)' + lock;
+        if (net.in_use) { option.textContent += ' ✓'; }
+        select.appendChild(option);
+    });
+    if (current) { select.value = current; }
+}
+
+function loadNetworks(rescan) {
+    var button = document.getElementById('scan_button');
+    button.disabled = true;
+    button.value = 'Scanning...';
+    fetch('/network/scan' + (rescan ? '?rescan=1' : ''), {cache: 'no-store'})
+        .then(function (r) { return r.json(); })
+        .then(function (data) { renderNetworks(data.networks || []); })
+        .catch(function () { /* leave whatever is already listed */ })
+        .then(function () {
+            button.disabled = false;
+            button.value = 'Rescan';
+        });
+}
+
+function toggleStatic() {
+    var manual = document.getElementById('eth_method').value === 'manual';
+    document.getElementById('static_fields').style.display = manual ? 'block' : 'none';
+}
+
+window.addEventListener('load', function () {
+    loadNetworks(false);
+    toggleStatic();
+    document.getElementById('eth_method').addEventListener('change', toggleStatic);
+});
+</script>
+{% endblock %}
+
+{% block body %}
+<div class="lol">
+{% with messages = get_flashed_messages() %}
+  {% if messages %}
+    <p>{{ messages[0] }}</p>
+  {% endif %}
+{% endwith %}
+</div>
+
+<div class="admin">
+    <h3>Network</h3>
+
+    {% if not state.available %}
+    <div class="info_box">
+        <p>NetworkManager is not available on this system, so network settings
+           cannot be changed here.</p>
+    </div>
+    {% else %}
+
+    <div class="settings-section">
+        <h3>Current status</h3>
+        <div class="net-status">
+            <p class="net-row">Wi-Fi:
+            {% if state.wifi %}
+                {{ state.wifi.state }}
+                {% if state.wifi.connection %}&mdash; {{ state.wifi.connection }}{% endif %}
+                {% if state.wifi.ip %}&mdash; {{ state.wifi.ip }}{% endif %}
+            {% else %}<span class="muted">no adapter</span>{% endif %}
+            </p>
+            <p class="net-row">Wired:
+            {% if state.ethernet %}
+                {{ state.ethernet.state }}
+                {% if state.ethernet.ip %}&mdash; {{ state.ethernet.ip }}{% endif %}
+            {% else %}<span class="muted">no adapter</span>{% endif %}
+            </p>
+        </div>
+    </div>
+
+    <div class="settings-section">
+        <h3>Captive portal</h3>
+        {% if state.portal %}
+        <p>The setup access point <strong>{{ portal_ssid }}</strong> is running.
+           Stopping it lets this device rejoin its usual Wi-Fi network.</p>
+        <form action="/network/portal" method="POST"
+              onsubmit="return confirm('Stop the captive portal? Devices connected to it will be disconnected.');">
+            <input type="submit" value="Stop captive portal" />
+        </form>
+        {% else %}
+        <p>Starts a setup access point so a phone can configure this device.
+           Wi-Fi cannot be an access point and a client at the same time, so
+           starting it disconnects this device from its current Wi-Fi network.</p>
+        <form action="/network/portal" method="POST"
+              onsubmit="return confirm('Start the captive portal? This device will leave its current Wi-Fi network.');">
+            <input type="submit" value="Start captive portal" />
+        </form>
+        {% endif %}
+    </div>
+
+    <div class="settings-section">
+        <h3>Join a Wi-Fi network</h3>
+        <form action="/network/wifi" method="POST"
+              onsubmit="return confirm('Join this network? This page will stop responding while the device switches over.');">
+            <p>
+                {{ wifi_form.ssid(id="wifi_list") }}
+                <input type="button" id="scan_button" value="Rescan"
+                       onclick="loadNetworks(true);" />
+            </p>
+            <p>{{ wifi_form.hidden_ssid(size=20, placeholder="Hidden network name") }}
+               {{ wifi_form.hidden_ssid.label }}</p>
+            <p>{{ wifi_form.password(size=20, autocomplete="off") }}
+               {{ wifi_form.password.label }}</p>
+            <p><input type="submit" value="Join network" /></p>
+        </form>
+    </div>
+
+    {% if saved %}
+    <div class="settings-section">
+        <h3>Saved networks</h3>
+        {% for connection in saved %}
+        <form action="/network/forget" method="POST" style="display:inline;"
+              onsubmit="return confirm('Forget {{ connection.name }}?');">
+            <input type="hidden" name="name" value="{{ connection.name }}" />
+            {{ connection.name }}{% if connection.active %} (in use){% endif %}
+            <input type="submit" class="danger-button" value="Forget" />
+        </form><br />
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="settings-section">
+        <h3>Wired network</h3>
+        {% if ethernet_connection %}
+        <form action="/network/ethernet" method="POST">
+            <p>{{ ethernet_form.method(id="eth_method") }} {{ ethernet_form.method.label }}</p>
+            <div id="static_fields">
+                <p>{{ ethernet_form.address(size=20, placeholder="192.168.1.50/24") }}
+                   {{ ethernet_form.address.label }}</p>
+                <p>{{ ethernet_form.gateway(size=20, placeholder="192.168.1.1") }}
+                   {{ ethernet_form.gateway.label }}</p>
+                <p>{{ ethernet_form.dns(size=20, placeholder="192.168.1.1") }}
+                   {{ ethernet_form.dns.label }}</p>
+            </div>
+            <p><input type="submit" value="Apply wired settings" /></p>
+        </form>
+        {% else %}
+        <p class="muted">No wired connection was found. Plug in an Ethernet
+           cable to configure it.</p>
+        {% endif %}
+    </div>
+
+    {% endif %}
+
+    <a href="/"><button type="button">Back to JoustMania</button></a>
+</div>
+{% endblock %}

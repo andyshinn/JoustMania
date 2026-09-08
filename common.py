@@ -170,4 +170,9 @@ REQUIRED_SETTINGS = [
     'ups_warn_percent',
     'ups_critical_percent',
     'ups_auto_shutdown',
+    # Captive portal / network settings
+    'portal_ssid',
+    'portal_password',
+    'portal_auto_fallback',
+    'portal_fallback_delay_secs',
 ]

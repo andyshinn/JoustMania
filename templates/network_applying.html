@@ -1,0 +1,29 @@
+{% extends "basic.html" %}
+
+{% block body %}
+<div class="info_box">
+{% if portal %}
+    <h2>Starting the captive portal</h2>
+    <p>The Wi-Fi network on this device is being replaced by a setup access
+       point. If you are connected over Wi-Fi you will be disconnected.</p>
+    <p>Join the <strong>JoustMania</strong> network from your phone, then a
+       setup page should open automatically. If it does not, browse to
+       <a href="http://joust.mania/network">http://joust.mania</a>.</p>
+{% elif ssid %}
+    <h2>Joining &ldquo;{{ ssid }}&rdquo;</h2>
+    <p>This device is switching networks now, so this page will stop
+       responding. That is expected.</p>
+    <p>Reconnect your phone or laptop to <strong>{{ ssid }}</strong>, then find
+       JoustMania again at its new address. The device's display shows the
+       address once it has joined.</p>
+    {% if previous_ip %}
+    <p><small>It was previously at {{ previous_ip }}.</small></p>
+    {% endif %}
+{% else %}
+    <h2>Stopping the captive portal</h2>
+    <p>The setup access point is shutting down and this device is rejoining
+       its usual network.</p>
+{% endif %}
+    <a href="/"><button type="button">Back to JoustMania</button></a>
+</div>
+{% endblock %}

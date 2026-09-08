@@ -7,6 +7,7 @@ from piaudio import Audio
 import numpy
 import random
 import logging
+import network_manager
 import system_power
 from math import sqrt
 from multiprocessing import Process
@@ -399,6 +400,22 @@ class Game():
                 logger.info("Power request during game: %s", action)
                 Process(target=system_power.request_system_power,
                         args=(action,)).start()
+            elif command in ('lcd_portal_on', 'lcd_portal_off'):
+                # Also immediate. Toggling the access point does not disturb a
+                # match -- gameplay runs over Bluetooth -- and deferring it
+                # would silently swallow the button for the whole game.
+                action = 'start' if command == 'lcd_portal_on' else 'stop'
+                logger.info("Captive portal %s requested during game", action)
+                settings = self.ns.settings
+                Process(
+                    target=network_manager.portal_toggle,
+                    args=(action,
+                          settings.get('portal_ssid',
+                                       network_manager.DEFAULT_PORTAL_SSID),
+                          settings.get('portal_password',
+                                       network_manager.DEFAULT_PORTAL_PASSWORD)),
+                    daemon=True,
+                ).start()
             elif command == 'setting_update':
                 # Not urgent, and applying it mid-game would be surprising.
                 # Hand it back so the menu loop applies it once the game ends.
