@@ -25,8 +25,15 @@ def main():
     print('JoustMania network prerequisites\n' + '-' * 52)
     ok = True
 
-    ok &= check('running as root', os.geteuid() == 0,
-                '' if os.geteuid() == 0 else '(re-run with sudo)')
+    # Informational, not a pass/fail: reads work as any user, and JoustMania
+    # itself always runs as root (joust.sh re-execs under sudo). Only the
+    # write operations -- joining a network, starting the portal -- need it.
+    if os.geteuid() == 0:
+        print('{:<34} root'.format('running as'))
+    else:
+        print('{:<34} {} (reads work; changing the network needs root, '
+              'which JoustMania itself has)'.format('running as',
+                                                    os.getenv('USER', 'non-root')))
 
     binary = shutil.which('nmcli')
     ok &= check('nmcli binary on PATH', binary is not None, binary or

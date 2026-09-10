@@ -51,10 +51,14 @@ except Exception:                                    # pragma: no cover
         "and network settings are disabled. Re-run setup.sh, or install it "
         "into the virtualenv with: venv/bin/pip install nmcli")
 else:
-    # The library prefixes every call with sudo by default. Under supervisor we
-    # are already root, and sudo may not even be present in that environment.
-    if hasattr(os, 'geteuid') and os.geteuid() == 0:
-        _nmcli.disable_use_sudo()
+    # The library prefixes every call with sudo by default; we never want that.
+    # JoustMania always runs as root -- supervisor's joust.conf sets no user=,
+    # and joust.sh re-execs under sudo regardless -- so sudo would be a no-op
+    # at best. And when this module *is* imported by a non-root process (a dev
+    # run, or network_test.py without sudo), sudo fails outright with "a
+    # terminal is required to read the password", whereas plain nmcli still
+    # answers every read we make. Disabling it is strictly more robust.
+    _nmcli.disable_use_sudo()
 
 
 def _api():

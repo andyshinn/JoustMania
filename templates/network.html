@@ -7,10 +7,15 @@
     .net-row { margin: 0.4em 0; }
     #wifi_list { min-width: 12em; }
     .muted { color: #888; }
+    .forget-row { margin: 0.4em 0; }
+    .forget-row summary { cursor: pointer; }
+    .hidden-network { margin: 0.6em 0; }
+    .hidden-network summary { cursor: pointer; color: #888; }
 </style>
 <script type="text/javascript">
 function renderNetworks(networks) {
     var select = document.getElementById('wifi_list');
+    var manual = document.querySelector('.hidden-network');
     var current = select.value;
     select.innerHTML = '';
     if (!networks.length) {
@@ -18,6 +23,9 @@ function renderNetworks(networks) {
         none.textContent = 'No networks found';
         none.value = '';
         select.appendChild(none);
+        // Nothing to pick, so typing a name is the only way forward. Open the
+        // disclosure rather than leaving the user at a dead end.
+        if (manual) { manual.open = true; }
         return;
     }
     networks.forEach(function (net) {
@@ -112,16 +120,14 @@ sudo ./restart_joustmania.sh</pre>
         {% if state.portal %}
         <p>The setup access point <strong>{{ portal_ssid }}</strong> is running.
            Stopping it lets this device rejoin its usual Wi-Fi network.</p>
-        <form action="/network/portal" method="POST"
-              onsubmit="return confirm('Stop the captive portal? Devices connected to it will be disconnected.');">
+        <form action="/network/portal" method="POST">
             <input type="submit" value="Stop captive portal" />
         </form>
         {% else %}
         <p>Starts a setup access point so a phone can configure this device.
            Wi-Fi cannot be an access point and a client at the same time, so
            starting it disconnects this device from its current Wi-Fi network.</p>
-        <form action="/network/portal" method="POST"
-              onsubmit="return confirm('Start the captive portal? This device will leave its current Wi-Fi network.');">
+        <form action="/network/portal" method="POST">
             <input type="submit" value="Start captive portal" />
         </form>
         {% endif %}
@@ -129,17 +135,29 @@ sudo ./restart_joustmania.sh</pre>
 
     <div class="settings-section">
         <h3>Join a Wi-Fi network</h3>
-        <form action="/network/wifi" method="POST"
-              onsubmit="return confirm('Join this network? This page will stop responding while the device switches over.');">
+        <form action="/network/wifi" method="POST">
             <p>
                 {{ wifi_form.ssid(id="wifi_list") }}
                 <input type="button" id="scan_button" value="Rescan"
                        onclick="loadNetworks(true);" />
             </p>
-            <p>{{ wifi_form.hidden_ssid(size=20, placeholder="Hidden network name") }}
-               {{ wifi_form.hidden_ssid.label }}</p>
             <p>{{ wifi_form.password(size=20, autocomplete="off") }}
                {{ wifi_form.password.label }}</p>
+
+            <!-- Behind a disclosure so it is out of the tab order for the
+                 common case: a closed <details> holds no focusable content, so
+                 picking an SSID goes straight to the password field on a phone
+                 rather than detouring through here. -->
+            <details class="hidden-network">
+                <summary>My network isn't listed</summary>
+                <p><small>For a hidden network, type its exact name. It is used
+                   instead of whatever is selected above.</small></p>
+                <p>{{ wifi_form.hidden_ssid(size=20, placeholder="Exact network name") }}
+                   {{ wifi_form.hidden_ssid.label }}</p>
+            </details>
+
+            <p><small>Joining a network disconnects this page. The device's
+               display shows its new address once it has joined.</small></p>
             <p><input type="submit" value="Join network" /></p>
         </form>
     </div>
@@ -148,12 +166,17 @@ sudo ./restart_joustmania.sh</pre>
     <div class="settings-section">
         <h3>Saved networks</h3>
         {% for connection in saved %}
-        <form action="/network/forget" method="POST" style="display:inline;"
-              onsubmit="return confirm('Forget {{ connection.name }}?');">
-            <input type="hidden" name="name" value="{{ connection.name }}" />
-            {{ connection.name }}{% if connection.active %} (in use){% endif %}
-            <input type="submit" class="danger-button" value="Forget" />
-        </form><br />
+        <details class="forget-row">
+            <summary>{{ connection.name }}{% if connection.active %} (in use){% endif %}</summary>
+            <form action="/network/forget" method="POST">
+                <input type="hidden" name="name" value="{{ connection.name }}" />
+                <p>This device will stop connecting to
+                   &ldquo;{{ connection.name }}&rdquo; automatically. You will
+                   need the password again to rejoin it.</p>
+                <input type="submit" class="danger-button"
+                       value="Forget {{ connection.name }}" />
+            </form>
+        </details>
         {% endfor %}
     </div>
     {% endif %}

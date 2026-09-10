@@ -155,7 +155,7 @@ class WifiForm(Form):
     for hidden networks -- picking from a list is far less error-prone on a
     phone than retyping an SSID."""
     ssid = SelectField('Network', choices=[], coerce=str)
-    hidden_ssid = StringField('Or a hidden network')
+    hidden_ssid = StringField('Hidden network name')
     password = PasswordField('Password')
 
 

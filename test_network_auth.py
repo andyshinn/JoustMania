@@ -162,6 +162,94 @@ class NetworkPageTest(WebUITestCase):
         self.assertIn(b'10.0.0.5', page)
         self.assertIn(b'HomeNet', page)
 
+    def test_page_uses_no_javascript_dialogs(self):
+        """Captive-portal browsers (iOS CNA, Android's login WebView) suppress
+        window.confirm and return false, which silently cancels the form and
+        gives the user no feedback at all. This page's whole audience is that
+        browser, so a dialog here is a bug, not a safeguard."""
+        page = self.client.get('/network').data
+        for banned in (b'confirm(', b'alert(', b'prompt(', b'onsubmit='):
+            with self.subTest(banned=banned):
+                self.assertNotIn(banned, page)
+
+    def test_forgetting_still_takes_two_steps(self):
+        # The guard survives the dialog's removal, as a JS-free disclosure.
+        page = self.client.get('/network').data
+        self.assertIn(b'<details', page)
+        self.assertIn(b'Forget HomeNet', page)
+
+    def test_every_form_posts_to_a_real_route(self):
+        """A form whose action does not resolve is the other way this page
+        can silently do nothing."""
+        import re
+        page = self.client.get('/network').data.decode()
+        actions = set(re.findall(r'<form action="([^"]+)"', page))
+        self.assertTrue(actions)
+        rules = {r.rule for r in self.web.app.url_map.iter_rules()}
+        for action in actions:
+            with self.subTest(action=action):
+                self.assertIn(action, rules)
+                response = self.client.post(action, data={'name': 'HomeNet',
+                                                          'method': 'auto',
+                                                          'ssid': 'HomeNet'})
+                # Anything but 405/404 means the route accepted the POST.
+                self.assertNotIn(response.status_code, (404, 405))
+
+    def join_form_fields(self):
+        """Fields of the join form as (disclosure depth, name, type).
+
+        Parsed properly rather than by string index: depth is the whole point
+        here, and a comment mentioning a tag would fool a regex.
+        """
+        from html.parser import HTMLParser
+
+        class Fields(HTMLParser):
+            def __init__(inner):
+                super().__init__()
+                inner.depth = 0
+                inner.inside = False
+                inner.rows = []
+
+            def handle_starttag(inner, tag, attrs):
+                attrs = dict(attrs)
+                if tag == 'form' and attrs.get('action') == '/network/wifi':
+                    inner.inside = True
+                if not inner.inside:
+                    return
+                if tag == 'details':
+                    inner.depth += 1
+                elif tag in ('input', 'select'):
+                    inner.rows.append((inner.depth, attrs.get('name', '-'),
+                                       attrs.get('type', 'select')))
+
+            def handle_endtag(inner, tag):
+                if not inner.inside:
+                    return
+                if tag == 'details':
+                    inner.depth -= 1
+                elif tag == 'form':
+                    inner.inside = False
+
+        parser = Fields()
+        parser.feed(self.client.get('/network').data.decode())
+        return parser.rows
+
+    def test_picking_an_ssid_leads_straight_to_the_password(self):
+        """A closed <details> holds no focusable content, so keeping the manual
+        field inside one keeps it out of the phone's Next/Previous order --
+        otherwise choosing a network detours through a box nobody wanted."""
+        order = [name for depth, name, _ in self.join_form_fields() if depth == 0]
+        self.assertEqual([n for n in order if n != '-'], ['ssid', 'password'])
+        manual = [d for d, name, _ in self.join_form_fields()
+                  if name == 'hidden_ssid']
+        self.assertEqual(manual, [1], 'hidden_ssid must sit inside the disclosure')
+
+    def test_the_submit_button_is_not_trapped_inside_the_disclosure(self):
+        # If it were, the form could not be submitted at all -- the same
+        # silent dead end as the suppressed confirm() dialogs.
+        submits = [d for d, _, kind in self.join_form_fields() if kind == 'submit']
+        self.assertEqual(submits, [0])
+
     def test_scan_returns_json(self):
         payload = self.client.get('/network/scan').get_json()
         self.assertEqual(payload['networks'][0]['ssid'], 'HomeNet')
