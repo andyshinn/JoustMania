@@ -55,6 +55,9 @@ class FakeAlsa:
         return sorted(self._cards)
 
     def card_name(self, index):
+        # pyalsaaudio >= 0.9 returns (name, longname). The Pi's own cards
+        # repeat themselves here; a USB adapter says 'USB' only in the long
+        # one -- both of which the code has to cope with.
         return self._cards[index][0]
 
     def mixers(self, cardindex=-1):
@@ -68,15 +71,21 @@ class FakeAlsa:
         return mixer
 
 
-PI4 = {0: ('Headphones', {'PCM': FakeMixer([70, 70])}),
-       1: ('vc4hdmi', {})}
+# Card names exactly as this hardware reports them, pair and all.
+PI4 = {0: (('vc4-hdmi-0', 'vc4-hdmi-0'), {}),
+       1: (('vc4-hdmi-1', 'vc4-hdmi-1'), {}),
+       2: (('bcm2835 Headphones', 'bcm2835 Headphones'),
+           {'PCM': FakeMixer([78])})}
 
-PI5 = {0: ('vc4hdmi0', {'PCM': FakeMixer([50])}),
-       1: ('vc4hdmi1', {}),
-       2: ('USB Audio Device', {'PCM': FakeMixer([60, 60])})}
+PI5 = {0: (('vc4-hdmi-0', 'vc4-hdmi-0'), {'PCM': FakeMixer([50])}),
+       1: (('vc4-hdmi-1', 'vc4-hdmi-1'), {}),
+       2: (('Device', 'C-Media USB Audio Device at usb-0000:01:00.0-1.2'),
+           {'PCM': FakeMixer([60, 60])})}
 
-CAPTURE_ONLY = {0: ('USB Microphone', {'PCM': FakeMixer(None)}),
-                1: ('USB Audio Device', {'Speaker': FakeMixer([40, 40])})}
+CAPTURE_ONLY = {0: (('Microphone', 'USB Microphone at usb-1.1'),
+                    {'PCM': FakeMixer(None)}),
+                1: (('Device', 'C-Media USB Audio Device at usb-1.2'),
+                    {'Speaker': FakeMixer([40, 40])})}
 
 
 class DiscoveryTest(unittest.TestCase):
@@ -92,8 +101,9 @@ class DiscoveryTest(unittest.TestCase):
         return fake
 
     def test_pi4_finds_the_headphone_jack(self):
+        """Headphones are card 2 on Bookworm, behind both HDMI outputs."""
         self.use(PI4)
-        self.assertEqual(audio_mixer.find_control(), ('PCM', 0))
+        self.assertEqual(audio_mixer.find_control(), ('PCM', 2))
 
     def test_pi5_skips_hdmi_for_the_usb_adapter(self):
         """HDMI is never the game's output, and on a Pi 5 it is card 0 --
@@ -106,7 +116,8 @@ class DiscoveryTest(unittest.TestCase):
         self.assertEqual(audio_mixer.find_control(), ('Speaker', 1))
 
     def test_no_playable_card_is_not_an_error(self):
-        self.use({0: ('vc4hdmi0', {}), 1: ('Loopback', {})})
+        self.use({0: (('vc4-hdmi-0', 'vc4-hdmi-0'), {}),
+                  1: (('Loopback', 'Loopback'), {})})
         self.assertIsNone(audio_mixer.find_control())
         self.assertFalse(audio_mixer.available())
         self.assertFalse(audio_mixer.set_volume(50))
@@ -117,17 +128,28 @@ class DiscoveryTest(unittest.TestCase):
         for _ in range(5):
             audio_mixer.set_volume(50)
         # One probe during discovery, then one open per set.
-        self.assertEqual(fake.opened.count(('PCM', 0)), 6)
+        self.assertEqual(fake.opened.count(('PCM', 2)), 6)
 
     def test_rescan_looks_again(self):
         fake = self.use(PI4)
-        self.assertEqual(audio_mixer.find_control(), ('PCM', 0))
-        fake._cards = PI5
-        self.assertEqual(audio_mixer.find_control(rescan=True), ('PCM', 2))
+        self.assertEqual(audio_mixer.find_control(), ('PCM', 2))
+        fake._cards = CAPTURE_ONLY
+        self.assertEqual(audio_mixer.find_control(rescan=True), ('Speaker', 1))
 
-    def test_description_names_the_card(self):
+    def test_description_names_the_card_once(self):
+        """The long name is matched on but never shown: it is a bus path, and
+        on the Pi's own cards it just repeats the short name."""
         self.use(PI5)
-        self.assertEqual(audio_mixer.description(), 'PCM on USB Audio Device')
+        self.assertEqual(audio_mixer.description(), 'PCM on Device')
+        audio_mixer.reset()
+        self.use(PI4)
+        self.assertEqual(audio_mixer.description(),
+                         'PCM on bcm2835 Headphones')
+
+    def test_a_usb_adapter_is_recognised_by_its_long_name(self):
+        """'USB' appears nowhere in the short name ALSA reports for one."""
+        self.use(PI5)
+        self.assertEqual(audio_mixer._card_rank(2)[0], 1)
 
 
 class VolumeTest(unittest.TestCase):
@@ -135,7 +157,8 @@ class VolumeTest(unittest.TestCase):
         audio_mixer.reset()
         self.addCleanup(audio_mixer.reset)
         self.mixer = FakeMixer([60, 60], switchcap=['Playback Mute'])
-        cards = {0: ('USB Audio Device', {'PCM': self.mixer})}
+        cards = {0: (('bcm2835 Headphones', 'bcm2835 Headphones'),
+                     {'PCM': self.mixer})}
         patcher = unittest.mock.patch.object(audio_mixer, 'alsaaudio',
                                              FakeAlsa(cards))
         patcher.start()

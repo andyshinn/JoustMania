@@ -79,30 +79,43 @@ def _card_indexes():
         return []
 
 
-def _card_name(index):
+def _card_names(index):
+    """(name to show, text to match on) for one card.
+
+    card_name() returns (name, longname) on pyalsaaudio >= 0.9 and a plain
+    string before that. The long name is where a USB adapter actually says
+    'USB', so matching uses both; but it is noise to read -- the Pi's own
+    cards report the same string twice -- so only the short one is shown.
+    """
     try:
         name = alsaaudio.card_name(index)
     except Exception:
-        return ''
-    # card_name() returns (name, longname) on pyalsaaudio >= 0.9 and a plain
-    # string before that.
-    if isinstance(name, (tuple, list)):
-        name = ' '.join(str(part) for part in name)
-    return str(name)
+        return '', ''
+    if not isinstance(name, (tuple, list)):
+        return str(name), str(name).lower()
+    parts = [str(part) for part in name if part]
+    if not parts:
+        return '', ''
+    return parts[0], ' '.join(dict.fromkeys(parts)).lower()
+
+
+def _card_name(index):
+    """The card as a person reads it, e.g. 'bcm2835 Headphones'."""
+    return _card_names(index)[0]
 
 
 def _card_rank(index):
     """Sort key: preferred cards first, in PREFERRED_CARDS order."""
-    name = _card_name(index).lower()
+    haystack = _card_names(index)[1]
     for rank, wanted in enumerate(PREFERRED_CARDS):
-        if wanted in name:
+        if wanted in haystack:
             return (rank, index)
     return (len(PREFERRED_CARDS), index)
 
 
 def _candidate_cards():
     cards = [i for i in _card_indexes()
-             if not any(skip in _card_name(i).lower() for skip in SKIP_CARDS)]
+             if not any(skip in _card_names(i)[1] for skip in SKIP_CARDS)]
     return sorted(cards, key=_card_rank)
 
 
