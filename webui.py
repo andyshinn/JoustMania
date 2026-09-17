@@ -12,6 +12,7 @@ from wtforms import (Form, SelectField, SelectMultipleField, BooleanField,
 from os import environ
 from sys import platform
 import common, colors
+import audio_mixer
 import json
 import yaml
 import logging
@@ -99,6 +100,12 @@ class SettingsForm(Form):
     move_can_be_admin = BooleanField('Allow Move to change settings')
     play_instructions = BooleanField('Play instructions before game start')
     play_audio = BooleanField('Play audio')
+    # Percent, driven at the ALSA mixer. A SelectField for the same reason as
+    # the HAT settings below: the range is enforced for free and a blank input
+    # can never post None over a saved value.
+    audio_volume = SelectField('Output volume',
+                               choices=[(pct,'{}%'.format(pct))
+                                        for pct in range(0,101,5)],coerce=int)
     red_on_kill = SelectField('Kill notification',choices=[(True,'Red'),('','Dark')],coerce=bool)
     sensitivity = SelectField('Move sensitivity',choices=[(0,'Ultra High'),(1,'High'),(2,'Medium'),(3,'Low'),(4,'Ultra Low')],coerce=int)
     mode_selection = SelectField('Mode selection', choices=[game.pretty_name for game in common.Games],coerce=str)   
@@ -497,6 +504,8 @@ class WebUI():
                 random_team_size = self.ns.settings['random_team_size'],
                 force_all_start = self.ns.settings['force_all_start'],
                 color_lock_choices = temp_colors,
+                audio_volume = self.ns.settings.get(
+                    'audio_volume', audio_mixer.DEFAULT_VOLUME),
                 lcd_enabled = self.ns.settings.get('lcd_enabled', 'auto'),
                 lcd_brightness = self.ns.settings.get('lcd_brightness', 100),
                 lcd_idle_brightness = self.ns.settings.get('lcd_idle_brightness', 15),
@@ -511,7 +520,9 @@ class WebUI():
                 portal_fallback_delay_secs = self.ns.settings.get(
                     'portal_fallback_delay_secs', 90),
             )
-            return render_template('settings.html', form=settingsForm, settings=self.ns.settings)
+            return render_template('settings.html', form=settingsForm,
+                                   settings=self.ns.settings,
+                                   mixer=audio_mixer.description())
 
     def web_settings_update(self,web_settings):
         colors_are_good = True
@@ -548,6 +559,11 @@ class WebUI():
 
         with open(common.SETTINGSFILE,'w') as yaml_file:
             yaml.dump(self.ns.settings,yaml_file)
+
+        # Applied here rather than left to the menu process: this is the only
+        # writer on this path, and a volume change nobody can hear until the
+        # next restart would read as a broken setting.
+        audio_mixer.apply(temp_settings)
 
         if colors_are_good:
             flash('Settings updated!')

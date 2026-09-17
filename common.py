@@ -159,6 +159,8 @@ REQUIRED_SETTINGS = [
     'menu_voice',
     'random_team_size',
     'force_all_start',
+    # Output volume, applied at the ALSA mixer (see audio_mixer.py)
+    'audio_volume',
     # LCD KeyPad HAT (DFR0514)
     'lcd_enabled',
     'lcd_brightness',

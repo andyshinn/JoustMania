@@ -65,6 +65,7 @@ import subprocess
 import controller_process
 import update
 import lcd_menu
+import audio_mixer
 import network_manager
 import system_power
 
@@ -962,6 +963,7 @@ class Menu():
             'random_modes': [Games.JoustFFA.name,Games.JoustRandomTeams.name,Games.Werewolf.name,Games.Swapper.name],
             'current_game': Games.JoustFFA.name,
             'play_audio': True,
+            'audio_volume': audio_mixer.DEFAULT_VOLUME,
             'menu_voice': 'ivy',
             'move_can_be_admin': True,
             'enforce_minimum': True,
@@ -1036,6 +1038,10 @@ class Menu():
         self.ns.settings = temp_settings
         if not settings_loaded:
             self.update_settings_file()
+        # The mixer keeps its own level across reboots, so the saved value has
+        # to be pushed at it here or the first game plays at whatever ALSA
+        # happened to be left on.
+        audio_mixer.apply(temp_settings)
 
     def update_settings_file(self):
         with open(common.SETTINGSFILE,'w') as yaml_file:
@@ -1053,6 +1059,8 @@ class Menu():
         temp_settings[key] = val
         self.ns.settings = temp_settings
         self.update_settings_file()
+        if key == 'audio_volume':
+            audio_mixer.set_volume(val)
 
 
     def check_command_queue(self):
@@ -1066,6 +1074,10 @@ class Menu():
                 # writing the yaml itself, so piparty stays the single writer
                 # and cannot race the WebUI.
                 self.update_setting(package['key'], package['value'])
+            elif command == 'lcd_audio_test':
+                # Played here rather than on the LCD process, which has no
+                # audio stack of its own.
+                Audio('audio/Menu/sounds/game_on.wav').start_effect()
             elif command == 'lcd_reset_bt':
                 logger.info("LCD requested a Bluetooth reset")
                 self.run_bluetooth_reset()

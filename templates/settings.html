@@ -160,10 +160,19 @@ $(document).ready(function(){
             {{ form.move_can_be_admin(checked=settings.move_can_be_admin) }} {{ form.move_can_be_admin.label }}
         </div>
         <div class="settings-section">
-            {{ form.play_instructions(checked=settings.play_instructions) }} {{ form.play_instructions.label }}
-        </div>
-        <div class="settings-section">
-            {{ form.play_audio(checked=settings.play_audio) }} {{ form.play_audio.label }}
+            <h3>Audio</h3>
+            <p>{{ form.play_audio(checked=settings.play_audio) }} {{ form.play_audio.label }}</p>
+            <p>{{ form.play_instructions(checked=settings.play_instructions) }} {{ form.play_instructions.label }}</p>
+            <p>{{ form.audio_volume }} {{ form.audio_volume.label }}</p>
+            {% if mixer %}
+                <p style="font-size:12px;color:#666">Set on the sound card's
+                {{ mixer }} control. Also adjustable on the LCD under Audio,
+                where it changes as you scroll so you can set it by ear.</p>
+            {% else %}
+                <p style="font-size:12px;color:#c00">No adjustable sound card was
+                found, so this setting will have no effect. Saved anyway, and
+                applied if one appears.</p>
+            {% endif %}
         </div>
         <div class="settings-section">
             {{ form.random_teams(checked=settings.random_teams) }} {{ form.random_teams.label }}

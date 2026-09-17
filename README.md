@@ -212,6 +212,24 @@ Custom Music
 * All music and audio can be disabled by changing `play_audio = False` in joustsettings.yaml, this will also disable tempo sensitivity changes for each game mode
 * two different menu voices can be selected, either aaron or ivy, you can change this via the menu_voice setting in joustsettings.yaml
 
+Output Volume
+---------------------------------
+The output volume is set from **Audio > Volume** on the LCD HAT, or under Audio
+on the web settings page, and is saved in `joustsettings.yaml` as
+`audio_volume` (0-100). It is applied to the sound card's own mixer, so it
+covers music, effects and the menu voice alike, and is restored at startup.
+
+On the LCD the level changes as you scroll, so you can set it by ear while the
+menu music plays; Left cancels back to the level you started from and Select
+keeps it. **Audio > Test Sound** plays a short sound to check the level in a
+quiet room.
+
+The mixer control is found automatically, which is needed because the Pi 4
+plays out of its headphone jack and the Pi 5 out of a USB audio adapter. The
+control in use is named on the web settings page. If no adjustable sound card
+is found, the LCD shows `n/a` beside Volume and the setting has no effect --
+set the level with `alsamixer` instead.
+
 
 # Game Rules and Variants 
 * Keep your controller still while trying to jostle others.

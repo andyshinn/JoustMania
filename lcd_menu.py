@@ -21,6 +21,7 @@ import socket
 import time
 from dataclasses import dataclass, field
 
+import audio_mixer
 import lcd_hat
 import network_manager
 import ups_hat
@@ -48,6 +49,7 @@ WINNER_FLASH_SECS = 5.0
 SHUTDOWN_GRACE_SECS = 30.0   # warning shown on the LCD before poweroff
 
 DEFAULTS = {
+    'audio_volume': audio_mixer.DEFAULT_VOLUME,
     'lcd_brightness': 100,
     'lcd_idle_brightness': 15,
     'lcd_idle_dim_secs': 120,
@@ -63,6 +65,8 @@ DEFAULTS = {
 
 # Bounds for every numeric setting the LCD can edit: (min, max, step).
 NUMERIC_RANGES = {
+    'audio_volume': (audio_mixer.MIN_VOLUME, audio_mixer.MAX_VOLUME,
+                     audio_mixer.VOLUME_STEP),
     'lcd_brightness': (10, 100, 5),
     'lcd_idle_brightness': (0, 100, 5),
     'lcd_idle_dim_secs': (0, 900, 30),
@@ -125,6 +129,19 @@ class Command:
 class SetSetting:
     key: str
     value: object
+
+
+@dataclass(frozen=True)
+class PreviewVolume:
+    """Applied straight at the ALSA mixer, saving nothing.
+
+    Volume is the one setting you judge by ear, so it has to move while you
+    hold the button. Routing each step through the command queue would be
+    ~8 settings writes a second at the keypad's repeat rate, each one
+    rewriting the yaml, so the LCD process drives the mixer itself and only
+    the value you accept is saved.
+    """
+    value: int
 
 
 # -- Page base ---------------------------------------------------------------
@@ -244,6 +261,15 @@ def _bar(fraction, width):
     return '[' + '#' * filled + '-' * (cells - filled) + ']'
 
 
+def _then(action, following):
+    """Sequence an optional action before one that must always happen.
+
+    Collapses to the bare action when there is nothing to do first, so pages
+    that do not use on_change keep returning a single Action.
+    """
+    return following if action is None else [action, following]
+
+
 def _pad_between(left, right, width=COLS):
     """Left-align one string and right-align another on the same row."""
     left = str(left)
@@ -307,8 +333,11 @@ class NumericItem(Item):
     def value_text(self, ctx):
         return '{}{}'.format(ctx.setting(self.key), self.unit)
 
+    def make_page(self):
+        return NumericPage(self.label, self.key, self.unit, self.preview)
+
     def activate(self, ctx):
-        return Push(NumericPage(self.label, self.key, self.unit, self.preview))
+        return Push(self.make_page())
 
 
 class NumericPage(Page):
@@ -352,15 +381,25 @@ class NumericPage(Page):
         bar = _bar((self.value - low) / span, self.BAR_WIDTH + 2)
         return self.title, _pad_between(bar, '{}{}'.format(self.value, self.unit))
 
+    def on_change(self, value):
+        """Hook for settings that apply as you scroll rather than on save.
+
+        Returns an action or None. Cancelling calls it again with the value we
+        opened with, so a live-applied setting cannot be left half-changed.
+        """
+        return None
+
     def on_button(self, btn, ctx):
         _, _, step = self._bounds(ctx)
         if btn == UP:
             self.value = self._clamp(ctx, self.value + step)
+            return self.on_change(self.value)
         elif btn == DOWN:
             self.value = self._clamp(ctx, self.value - step)
+            return self.on_change(self.value)
         elif btn == LEFT:
             self.value = self._original      # cancel restores what we opened with
-            return Pop()
+            return _then(self.on_change(self.value), Pop())
         elif btn in (SELECT, RIGHT):
             return [SetSetting(self.key, self.value), Pop()]
         return None
@@ -371,6 +410,30 @@ class NumericPage(Page):
             return None
         base = AMBIENT_COLORS.get(ctx.game_status, DEFAULT_AMBIENT)
         return tuple(v * self.value // 100 for v in base)
+
+
+class VolumePage(NumericPage):
+    """Volume, adjusted by ear: every step goes at the mixer immediately."""
+
+    def on_change(self, value):
+        return PreviewVolume(value)
+
+
+class VolumeItem(NumericItem):
+    """Opens a VolumePage, and says so when there is no mixer to drive.
+
+    The row reads 'n/a' rather than disappearing: discovery runs once per
+    process, so a hidden row would stay hidden for the rest of the session if
+    a USB audio adapter happened to enumerate late.
+    """
+
+    def value_text(self, ctx):
+        if not audio_mixer.available():
+            return 'n/a'
+        return super().value_text(ctx)
+
+    def make_page(self):
+        return VolumePage(self.label, self.key, self.unit)
 
 
 class ConfirmPage(ListPage):
@@ -656,14 +719,21 @@ def _game_mode_page():
     )
 
 
+def _audio_page():
+    return ListPage('Audio', [
+        VolumeItem('Volume', 'audio_volume', '%'),
+        ActionItem('Test Sound', {'command': 'lcd_audio_test'}),
+        ToggleItem('Play Audio', 'play_audio'),
+        ToggleItem('Instruct', 'play_instructions'),
+    ])
+
+
 def _settings_page():
     return ListPage('Settings', [
         NumericItem('Bright', 'lcd_brightness', '%', preview=True),
         NumericItem('Dim lvl', 'lcd_idle_brightness', '%', preview=True),
         NumericItem('Dim after', 'lcd_idle_dim_secs', 's'),
         ToggleItem('Ambient', 'lcd_backlight_ambient'),
-        ToggleItem('Audio', 'play_audio'),
-        ToggleItem('Instruct', 'play_instructions'),
         ToggleItem('ColorLock', 'color_lock'),
         ToggleItem('RandTeams', 'random_teams'),
         NumericItem('Warn at', 'ups_warn_percent', '%'),
@@ -710,6 +780,7 @@ def build_main_menu():
                    visible_when=lambda ctx: not ctx.in_game),
         ActionItem('Kill Game', {'command': 'killgame'},
                    visible_when=lambda ctx: ctx.in_game),
+        SubmenuItem('Audio', _audio_page),
         SubmenuItem('Network', _network_page),
         SubmenuItem('Settings', _settings_page),
         SubmenuItem('Power', _power_page),
@@ -1006,6 +1077,10 @@ class LcdApp:
             self.stack.pop(ctx)
         elif isinstance(action, Command):
             self._send(action.payload)
+        elif isinstance(action, PreviewVolume):
+            # Hardware the LCD process can reach directly, like the backlight;
+            # nothing is persisted until the page returns a SetSetting.
+            audio_mixer.set_volume(action.value)
         elif isinstance(action, SetSetting):
             # piparty owns the settings file; going through the queue keeps a
             # single writer and avoids racing the WebUI.

@@ -25,14 +25,22 @@ import logging
 import lcd_menu
 from lcd_menu import (COLS, DOWN, LEFT, RIGHT, SELECT, UP, Backlight, Command,
                       ConfirmPage, Ctx, HomeCarousel, LcdApp, ListPage,
-                      LowBatteryPage, NumericPage, PageStack, Pop, Push,
-                      SetSetting, build_home_pages, build_main_menu)
+                      LowBatteryPage, NumericPage, PageStack, Pop, PreviewVolume,
+                      Push, SetSetting, VolumePage, build_home_pages,
+                      build_main_menu)
 
 # Several tests deliberately exercise error and critical-battery paths, which
 # log loudly. Keep the test output readable.
 logging.disable(logging.CRITICAL)
 
 ALL_BUTTONS = (UP, DOWN, LEFT, RIGHT, SELECT)
+
+
+def actions(result):
+    """A button handler's return as a flat list; it may be one, several or none."""
+    if result is None:
+        return []
+    return list(result) if isinstance(result, (list, tuple)) else [result]
 
 MENU_STATUS = {'game_status': 'menu', 'game_mode': 'Joust Free-for-All',
                'move_count': 5, 'ready_count': 3, 'game_count': 3}
@@ -156,7 +164,11 @@ class PageContractTest(unittest.TestCase):
             for name, context in CTX_MATRIX.items():
                 page.on_enter(context)
                 with self.subTest(page=type(page).__name__, ctx=name):
-                    self.assertIsInstance(page.on_button(LEFT, context), Pop)
+                    # A page may pair the Pop with cleanup -- VolumePage undoes
+                    # its live preview -- so what matters is that one is in there.
+                    self.assertTrue(
+                        any(isinstance(a, Pop)
+                            for a in actions(page.on_button(LEFT, context))))
 
     def test_backlight_is_none_or_a_valid_rgb_triple(self):
         for page in all_pages():
@@ -412,6 +424,125 @@ class FakeNs:
 class BlankPage(lcd_menu.Page):
     def render(self, ctx):
         return '', ''
+
+
+class VolumePageTest(unittest.TestCase):
+    """Volume is judged by ear, so it applies while you scroll and is undone
+    if you back out -- neither of which the other numeric settings do."""
+
+    def page(self, context=None):
+        page = VolumePage('Volume', 'audio_volume', '%')
+        page.on_enter(context or CTX_MATRIX['menu'])
+        return page
+
+    def test_opens_on_the_saved_value(self):
+        self.assertEqual(self.page().value,
+                         lcd_menu.DEFAULTS['audio_volume'])
+
+    def test_each_step_previews_the_new_value(self):
+        page = self.page()
+        start = page.value
+        step = lcd_menu.NUMERIC_RANGES['audio_volume'][2]
+        self.assertEqual(page.on_button(DOWN, CTX_MATRIX['menu']),
+                         PreviewVolume(start - step))
+        self.assertEqual(page.on_button(UP, CTX_MATRIX['menu']),
+                         PreviewVolume(start))
+
+    def test_cancel_restores_the_level_you_were_listening_to(self):
+        page = self.page()
+        start = page.value
+        for _ in range(4):
+            page.on_button(DOWN, CTX_MATRIX['menu'])
+        result = actions(page.on_button(LEFT, CTX_MATRIX['menu']))
+        self.assertIn(PreviewVolume(start), result)
+        self.assertTrue(any(isinstance(a, Pop) for a in result))
+        self.assertEqual(page.value, start)
+
+    def test_select_saves_the_previewed_value(self):
+        page = self.page()
+        start = page.value
+        step = lcd_menu.NUMERIC_RANGES['audio_volume'][2]
+        page.on_button(DOWN, CTX_MATRIX['menu'])
+        result = actions(page.on_button(SELECT, CTX_MATRIX['menu']))
+        updates = [a for a in result if isinstance(a, SetSetting)]
+        self.assertEqual(updates, [SetSetting('audio_volume', start - step)])
+        self.assertTrue(any(isinstance(a, Pop) for a in result))
+
+    def test_range_covers_silence_to_full(self):
+        low, high, _ = lcd_menu.NUMERIC_RANGES['audio_volume']
+        self.assertEqual((low, high), (0, 100))
+
+    def test_plain_numeric_pages_do_not_preview(self):
+        """The on_change hook must stay opt-in: brightness saves on Select."""
+        page = NumericPage('Bright', 'lcd_brightness', '%')
+        page.on_enter(CTX_MATRIX['menu'])
+        self.assertIsNone(page.on_button(DOWN, CTX_MATRIX['menu']))
+        self.assertIsInstance(page.on_button(LEFT, CTX_MATRIX['menu']), Pop)
+
+
+class AudioMenuTest(unittest.TestCase):
+    def audio_page(self):
+        menu = build_main_menu()
+        for item in menu.items:
+            if item.label == 'Audio':
+                return item.activate(CTX_MATRIX['menu']).page
+        self.fail('No Audio entry on the main menu')
+
+    def test_main_menu_has_an_audio_entry(self):
+        self.assertIsInstance(self.audio_page(), ListPage)
+
+    def test_volume_opens_a_volume_page(self):
+        item = self.audio_page().items[0]
+        self.assertEqual(item.label, 'Volume')
+        self.assertIsInstance(item.activate(CTX_MATRIX['menu']).page, VolumePage)
+
+    def test_volume_reads_n_a_without_a_mixer(self):
+        item = self.audio_page().items[0]
+        with unittest.mock.patch.object(lcd_menu.audio_mixer, 'available',
+                                        return_value=False):
+            self.assertEqual(item.value_text(CTX_MATRIX['menu']), 'n/a')
+        with unittest.mock.patch.object(lcd_menu.audio_mixer, 'available',
+                                        return_value=True):
+            self.assertEqual(item.value_text(CTX_MATRIX['menu']), '80%')
+
+    def test_test_sound_is_played_by_piparty_not_the_lcd(self):
+        """The LCD process has no audio stack, so it has to ask over the queue."""
+        labels = {item.label: item for item in self.audio_page().items}
+        action = labels['Test Sound'].activate(CTX_MATRIX['menu'])
+        self.assertEqual(action, Command({'command': 'lcd_audio_test'}))
+
+    def test_every_row_fits_the_panel(self):
+        page = self.audio_page()
+        for index in range(len(page.items)):
+            page.index = index
+            for line in page.render(CTX_MATRIX['menu']):
+                self.assertLessEqual(len(line), COLS)
+
+
+class PreviewDispatchTest(unittest.TestCase):
+    """PreviewVolume goes at the mixer directly; it must never reach the queue,
+    which would rewrite the settings yaml eight times a second."""
+
+    def app(self):
+        return LcdApp(FakeQueue(), FakeNs(), FakeLcd(), None)
+
+    def test_preview_drives_the_mixer_and_not_the_queue(self):
+        app = self.app()
+        with unittest.mock.patch.object(lcd_menu.audio_mixer,
+                                        'set_volume') as set_volume:
+            app.apply(PreviewVolume(45), CTX_MATRIX['menu'])
+        set_volume.assert_called_once_with(45)
+        self.assertEqual(app.command_queue.items, [])
+
+    def test_saving_goes_over_the_queue_so_piparty_stays_the_writer(self):
+        app = self.app()
+        with unittest.mock.patch.object(lcd_menu.audio_mixer,
+                                        'set_volume') as set_volume:
+            app.apply(SetSetting('audio_volume', 45), CTX_MATRIX['menu'])
+        set_volume.assert_not_called()
+        self.assertEqual(app.command_queue.items,
+                         [{'command': 'setting_update',
+                           'key': 'audio_volume', 'value': 45}])
 
 
 class BacklightTest(unittest.TestCase):
@@ -721,13 +852,14 @@ class NumericPageRenderTest(unittest.TestCase):
     def render(self, key, value, context=None):
         context = context or CTX_MATRIX['menu']
         page = NumericPage('Bright', key, '%' if 'percent' in key
-                           or 'brightness' in key else 's')
+                           or 'brightness' in key or 'volume' in key else 's')
         page.on_enter(context)
         page.value = value
         return page.render(context)
 
     def test_bar_is_complete_at_both_extremes(self):
-        for key, values in (('lcd_brightness', (10, 100)),
+        for key, values in (('audio_volume', (0, 100)),
+                            ('lcd_brightness', (10, 100)),
                             ('lcd_idle_brightness', (0, 100)),
                             ('ups_warn_percent', (5, 50)),
                             ('ups_critical_percent', (1, 25))):
