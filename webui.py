@@ -13,6 +13,7 @@ from os import environ
 from sys import platform
 import common, colors
 import audio_mixer
+import cpu_power
 import json
 import yaml
 import logging
@@ -106,6 +107,10 @@ class SettingsForm(Form):
     audio_volume = SelectField('Output volume',
                                choices=[(pct,'{}%'.format(pct))
                                         for pct in range(0,101,5)],coerce=int)
+    # Filled per request by _fill_cpu_choices(): the governors and clock steps
+    # on offer depend on the machine's cpufreq driver.
+    cpu_governor = SelectField('CPU governor', choices=[], coerce=str)
+    cpu_max_mhz = SelectField('Max CPU clock', choices=[], coerce=int)
     red_on_kill = SelectField('Kill notification',choices=[(True,'Red'),('','Dark')],coerce=bool)
     sensitivity = SelectField('Move sensitivity',choices=[(0,'Ultra High'),(1,'High'),(2,'Medium'),(3,'Low'),(4,'Ultra Low')],coerce=int)
     mode_selection = SelectField('Mode selection', choices=[game.pretty_name for game in common.Games],coerce=str)   
@@ -151,6 +156,18 @@ class SettingsForm(Form):
         choices=[(30,'30 seconds'),(60,'1 minute'),(90,'90 seconds'),
                  (120,'2 minutes'),(300,'5 minutes'),(600,'10 minutes')],
         coerce=int)
+
+
+def _fill_cpu_choices(form):
+    form.cpu_governor.choices = (
+        [(cpu_power.AUTO_GOVERNOR, 'Default (as the OS set it)')]
+        + [(name, name) for name in cpu_power.governors()])
+    # Fastest first, matching the LCD.
+    form.cpu_max_mhz.choices = (
+        [(cpu_power.NO_CAP, 'No cap')]
+        + [(mhz, '{} MHz'.format(mhz))
+           for mhz in sorted(cpu_power.frequencies_mhz(), reverse=True)])
+    return form
 
 
 class NetworkPinForm(Form):
@@ -492,13 +509,13 @@ class WebUI():
     #@app.route('/settings')
     def settings(self):
         if request.method == 'POST':
-            new_settings = SettingsForm(request.form).data
+            new_settings = _fill_cpu_choices(SettingsForm(request.form)).data
             self.web_settings_update(new_settings)
             return redirect(url_for('settings'))
         else:
             temp_colors = self.ns.settings['color_lock_choices']
             temp_colors = temp_colors[2] + temp_colors[3] + temp_colors[4]
-            settingsForm = SettingsForm(
+            settingsForm = _fill_cpu_choices(SettingsForm(
                 sensitivity = self.ns.settings['sensitivity'],
                 red_on_kill = self.ns.settings['red_on_kill'],
                 random_team_size = self.ns.settings['random_team_size'],
@@ -519,10 +536,15 @@ class WebUI():
                     'portal_password', network_manager.DEFAULT_PORTAL_PASSWORD),
                 portal_fallback_delay_secs = self.ns.settings.get(
                     'portal_fallback_delay_secs', 90),
-            )
+                cpu_governor = self.ns.settings.get(
+                    'cpu_governor', cpu_power.AUTO_GOVERNOR),
+                cpu_max_mhz = cpu_power.normalize_mhz(
+                    self.ns.settings.get('cpu_max_mhz', cpu_power.NO_CAP)),
+            ))
             return render_template('settings.html', form=settingsForm,
                                    settings=self.ns.settings,
-                                   mixer=audio_mixer.description())
+                                   mixer=audio_mixer.description(),
+                                   cpu=cpu_power.status())
 
     def web_settings_update(self,web_settings):
         colors_are_good = True
@@ -542,6 +564,7 @@ class WebUI():
         web_settings = {k: v for k, v in web_settings.items() if v is not None}
 
         temp_settings = self.ns.settings
+        cpu_before = [temp_settings.get(key) for key in cpu_power.SETTING_KEYS]
         temp_settings.update(web_settings)
         temp_settings['color_lock_choices'] = temp_colors
 
@@ -564,6 +587,13 @@ class WebUI():
         # writer on this path, and a volume change nobody can hear until the
         # next restart would read as a broken setting.
         audio_mixer.apply(temp_settings)
+
+        # The CPU settings are applied by piparty rather than here: cpu_power
+        # remembers what the kernel had before JoustMania changed it, so that
+        # Default can put it back, and that memory lives in whichever process
+        # made the change. One applier keeps the LCD and the web in step.
+        if [temp_settings.get(key) for key in cpu_power.SETTING_KEYS] != cpu_before:
+            self.command_queue.put({'command': 'cpu_apply'})
 
         if colors_are_good:
             flash('Settings updated!')

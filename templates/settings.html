@@ -239,6 +239,18 @@ $(document).ready(function(){
             <p>{{ form.ups_critical_percent }} {{ form.ups_critical_percent.label }}</p>
             <p>{{ form.ups_auto_shutdown(checked=settings.ups_auto_shutdown) }} {{ form.ups_auto_shutdown.label }}</p>
 
+            {% if cpu %}
+            <h3>CPU</h3>
+            <p>{{ form.cpu_governor }} {{ form.cpu_governor.label }}</p>
+            <p>{{ form.cpu_max_mhz }} {{ form.cpu_max_mhz.label }}</p>
+            <p style="font-size:12px;color:#666">Now: {{ cpu.cur_mhz }} of
+            {{ cpu.max_mhz }} MHz, {{ cpu.governor }}{% if cpu.temp_c is not none %},
+            {{ '%.0f' % cpu.temp_c }}&deg;C{% endif %}. A lower cap saves battery
+            (and lowers the core voltage with it) at the cost of headroom; try it
+            with a full game before relying on it. Default leaves the OS's own
+            setting alone. Also on the LCD under Advanced.</p>
+            {% endif %}
+
             <h3>Captive Portal</h3>
             <p>Used by the setup access point. Join it from a phone to
                configure this device's network from the

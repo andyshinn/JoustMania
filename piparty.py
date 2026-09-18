@@ -1082,6 +1082,9 @@ class Menu():
                 # writing the yaml itself, so piparty stays the single writer
                 # and cannot race the WebUI.
                 self.update_setting(package['key'], package['value'])
+            elif command == 'cpu_apply':
+                # The WebUI saved new CPU settings; see web_settings_update.
+                cpu_power.apply(self.ns.settings)
             elif command == 'lcd_audio_test':
                 # Played here rather than on the LCD process, which has no
                 # audio stack of its own.
