@@ -199,11 +199,41 @@ class ScanTest(FacadeBase):
         self.assertEqual([ap['ssid'] for ap in network_manager.scan()], ['Real'])
 
     def test_rescan_is_only_requested_when_asked(self):
-        api = self.install(FakeApi(points=[]))
+        api = self.install(FakeApi(points=[access_point('HomeNet', 50)]))
         network_manager.scan()
         network_manager.scan(rescan=True)
         self.assertEqual([call[1] for call in api.called('device.wifi')],
                          [None, True])
+
+    def test_sweeps_when_the_cached_list_is_empty(self):
+        api = self.install(FakeApi(points=[]))
+        network_manager.scan()
+        self.assertEqual([call[1] for call in api.called('device.wifi')],
+                         [None, True])
+
+    def test_hides_our_own_ap_while_the_portal_is_up(self):
+        self.install(FakeApi(
+            points=[access_point('JoustMania', 100, in_use=True),
+                    access_point('HomeNet', 60)],
+            active=[connection(network_manager.PORTAL_CON_NAME)]))
+        self.assertEqual([ap['ssid'] for ap in network_manager.scan()],
+                         ['HomeNet'])
+
+    def test_first_portal_scan_sweeps_past_a_cache_of_only_ourselves(self):
+        # Starting the hotspot flushes NetworkManager's scan cache, so the
+        # first unforced scan sees nothing but our own AP.
+        api = self.install(FakeApi(
+            points=[access_point('JoustMania', 100, in_use=True)],
+            active=[connection(network_manager.PORTAL_CON_NAME)]))
+        network_manager.scan()
+        self.assertEqual([call[1] for call in api.called('device.wifi')],
+                         [None, True])
+
+    def test_keeps_the_joined_network_when_not_in_portal_mode(self):
+        self.install(FakeApi(points=[access_point('HomeNet', 60, in_use=True)]))
+        results = network_manager.scan()
+        self.assertEqual([ap['ssid'] for ap in results], ['HomeNet'])
+        self.assertTrue(results[0]['in_use'])
 
     def test_returns_empty_when_scanning_fails(self):
         api = self.install(FakeApi(points=[access_point('X', 1)]))

@@ -152,10 +152,24 @@ def scan(rescan=False):
     """Visible access points, strongest first. Never raises; [] on failure.
 
     `rescan` forces a fresh sweep, which takes seconds -- only pass it when the
-    user explicitly asked to refresh.
+    user explicitly asked to refresh, or when the cached list is useless.
+
+    While the portal is up our own AP is left out: it is the network the
+    browser is already on, and picking it would try to join ourselves.
     """
     if _nmcli is None:
         return []
+    portal = portal_active()
+    networks = _scan_once(rescan, portal)
+    # Raising the hotspot flushes NetworkManager's scan cache, leaving only our
+    # own AP in it -- which is filtered out. An empty list is never what the
+    # user wants to see, so pay for a real sweep instead.
+    if not networks and not rescan:
+        networks = _scan_once(True, portal)
+    return networks
+
+
+def _scan_once(rescan, portal):
     try:
         points = _nmcli.device.wifi(rescan=True if rescan else None)
     except Exception as exc:
@@ -164,6 +178,10 @@ def scan(rescan=False):
 
     seen = {}
     for point in points:
+        # In AP mode the radio cannot also be a client, so the in-use entry is
+        # the fake AP NetworkManager lists for the hotspot itself.
+        if portal and point.in_use:
+            continue
         ssid = (point.ssid or '').strip()
         if not ssid:
             continue                       # hidden network; nothing to show
