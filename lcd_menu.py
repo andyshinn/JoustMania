@@ -22,6 +22,7 @@ import time
 from dataclasses import dataclass, field
 
 import audio_mixer
+import cpu_power
 import lcd_hat
 import network_manager
 import ups_hat
@@ -35,6 +36,7 @@ UP, DOWN, LEFT, RIGHT, SELECT = 'UP', 'DOWN', 'LEFT', 'RIGHT', 'SELECT'
 
 LOOP_SLEEP_SECS = 0.05      # ~20Hz; fast enough for buttons to feel instant
 UPS_POLL_SECS = 10.0
+CPU_POLL_SECS = 1.0
 
 # Ambient backlight hues by game_status. Brightness is applied separately.
 AMBIENT_COLORS = {
@@ -50,6 +52,8 @@ SHUTDOWN_GRACE_SECS = 30.0   # warning shown on the LCD before poweroff
 
 DEFAULTS = {
     'audio_volume': audio_mixer.DEFAULT_VOLUME,
+    'cpu_governor': cpu_power.AUTO_GOVERNOR,
+    'cpu_max_mhz': cpu_power.NO_CAP,
     'lcd_brightness': 100,
     'lcd_idle_brightness': 15,
     'lcd_idle_dim_secs': 120,
@@ -92,6 +96,8 @@ class Ctx:
     net: dict = field(default_factory=dict)
     # The admin page's PIN, owned by piparty. None when it has not been set.
     pin: object = None
+    # Live cpufreq readings (cpu_power.status()); empty when there is none.
+    cpu: dict = field(default_factory=dict)
 
     @property
     def game_status(self):
@@ -467,11 +473,12 @@ class ConfirmPage(ListPage):
 class ChoicePage(ListPage):
     """Pick one from a list. Marks the current selection with a '*'."""
 
-    def __init__(self, title, choices, current, on_choose):
+    def __init__(self, title, choices, current, on_choose, describe=str):
         self._choices = list(choices)
         self._current = current
         self._on_choose = on_choose
-        super().__init__(title, [_Choice(c, self) for c in self._choices])
+        super().__init__(title, [_Choice(c, self, describe(c))
+                                 for c in self._choices])
 
     def on_enter(self, ctx):
         # Open on whatever is currently selected rather than the top.
@@ -482,8 +489,8 @@ class ChoicePage(ListPage):
 
 
 class _Choice(Item):
-    def __init__(self, value, page):
-        self.label = str(value)
+    def __init__(self, value, page, label):
+        self.label = label
         self.value = value
         self._page = page
 
@@ -686,6 +693,23 @@ class SyncPage(Page):
         return None
 
 
+class CpuStatusPage(StaticPage):
+    """What the CPU is actually doing, to check a governor or cap took."""
+
+    title = 'CPU now'
+
+    def render(self, ctx):
+        cpu = ctx.cpu
+        if not cpu:
+            return 'CPU scaling', 'n/a'
+        cur = cpu.get('cur_mhz') or '?'
+        top = '{}/{}MHz'.format(cur, cpu.get('max_mhz') or '?')
+        temp = cpu.get('temp_c')
+        if temp is not None:
+            top = _pad_between(top, '{:.0f}C'.format(temp))
+        return top, 'Gov {}'.format(cpu.get('governor', '?'))
+
+
 def _local_ip():
     """Best-effort LAN address, same trick webui.web_urls() uses.
 
@@ -772,6 +796,82 @@ def _network_page():
     ])
 
 
+def _governor_label(name):
+    return 'Default' if name == cpu_power.AUTO_GOVERNOR else name
+
+
+def _mhz_label(mhz):
+    return 'No cap' if mhz == cpu_power.NO_CAP else '{} MHz'.format(mhz)
+
+
+class _CpuItem(SubmenuItem):
+    """A CPU setting row. Reads n/a and does nothing without cpufreq.
+
+    The choices are read from sysfs when the page opens rather than when the
+    menu is built, like the game-mode list, so pages stay pure functions of
+    Ctx while they are showing.
+    """
+
+    def activate(self, ctx):
+        if not ctx.cpu:
+            return None
+        return super().activate(ctx)
+
+    def value_text(self, ctx):
+        if not ctx.cpu:
+            return 'n/a'
+        return self.setting_text(ctx)
+
+
+class _GovernorItem(_CpuItem):
+    def __init__(self):
+        super().__init__('Gov', _governor_page)
+
+    def setting_text(self, ctx):
+        name = ctx.setting('cpu_governor')
+        # 'conservative' is the only one too long to share a row with 'Gov'.
+        return 'conserv' if name == 'conservative' else _governor_label(name)
+
+
+class _MaxMhzItem(_CpuItem):
+    def __init__(self):
+        super().__init__('Max MHz', _max_mhz_page)
+
+    def setting_text(self, ctx):
+        mhz = cpu_power.normalize_mhz(ctx.setting('cpu_max_mhz'))
+        return 'No cap' if mhz == cpu_power.NO_CAP else str(mhz)
+
+
+def _governor_page():
+    return ChoicePage(
+        'CPU governor',
+        [cpu_power.AUTO_GOVERNOR] + cpu_power.governors(),
+        current=lambda ctx: ctx.setting('cpu_governor'),
+        on_choose=lambda name: SetSetting('cpu_governor', name),
+        describe=_governor_label,
+    )
+
+
+def _max_mhz_page():
+    # Fastest first: the cap you reach for on battery is one or two steps
+    # down, not the bottom of the list.
+    return ChoicePage(
+        'Max CPU clock',
+        [cpu_power.NO_CAP] + sorted(cpu_power.frequencies_mhz(), reverse=True),
+        current=lambda ctx: cpu_power.normalize_mhz(ctx.setting('cpu_max_mhz')),
+        on_choose=lambda mhz: SetSetting('cpu_max_mhz', mhz),
+        describe=_mhz_label,
+    )
+
+
+def _advanced_page():
+    return ListPage('Advanced', [
+        _GovernorItem(),
+        _MaxMhzItem(),
+        SubmenuItem('CPU now', CpuStatusPage),
+    ])
+
+
 def build_main_menu():
     return ListPage('Main Menu', [
         SubmenuItem('Game Mode', _game_mode_page),
@@ -783,6 +883,7 @@ def build_main_menu():
         SubmenuItem('Audio', _audio_page),
         SubmenuItem('Network', _network_page),
         SubmenuItem('Settings', _settings_page),
+        SubmenuItem('Advanced', _advanced_page),
         SubmenuItem('Power', _power_page),
     ])
 
@@ -968,6 +1069,8 @@ class LcdApp:
         self._last_lines = None
         self._ups_state = {}
         self._next_ups_poll = 0.0
+        self._cpu_state = {}
+        self._next_cpu_poll = 0.0
         self._low_battery_page = None
         self._shutdown_sent = False
 
@@ -990,6 +1093,21 @@ class LcdApp:
             self.ns.ups_status = dict(self._ups_state)
         except Exception:
             logger.debug("Could not publish ups_status", exc_info=True)
+
+    def poll_cpu(self, now):
+        """Sample cpufreq at 1Hz rather than from inside a page's render().
+
+        Reading sysfs here keeps pages pure, and a second is quick enough to
+        watch the clock move on the CPU screen.
+        """
+        if now < self._next_cpu_poll:
+            return
+        self._next_cpu_poll = now + CPU_POLL_SECS
+        try:
+            self._cpu_state = cpu_power.status()
+        except Exception:
+            logger.debug("Could not read cpufreq", exc_info=True)
+            self._cpu_state = {}
 
     def sync_policy(self, ctx):
         """Track threshold changes made in the WebUI or on the LCD.
@@ -1060,7 +1178,8 @@ class LcdApp:
         except Exception:
             pin = None
         return Ctx(status=status, settings=settings,
-                   ups=dict(self._ups_state), now=now, net=net, pin=pin)
+                   ups=dict(self._ups_state), now=now, net=net, pin=pin,
+                   cpu=dict(self._cpu_state))
 
     # -- actions -----------------------------------------------------------
 
@@ -1117,6 +1236,7 @@ class LcdApp:
     def tick(self, now=None):
         now = time.time() if now is None else now
         self.poll_ups(now)
+        self.poll_cpu(now)
         ctx = self.build_ctx(now)
         self.sync_policy(ctx)
         self.backlight.note_status(ctx)

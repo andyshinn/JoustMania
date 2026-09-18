@@ -1186,3 +1186,118 @@ class NetworkCtxTest(unittest.TestCase):
         context = self.build().build_ctx(now=1.0)
         self.assertEqual(context.net, {})
         self.assertIsNone(context.pin)
+
+
+CPU_PI4 = {'governor': 'ondemand', 'cur_mhz': 600, 'max_mhz': 1500,
+           'hw_max_mhz': 1500, 'temp_c': 47.6}
+GOVERNORS = ['conservative', 'ondemand', 'powersave', 'performance', 'schedutil']
+FREQS = [600, 700, 800, 900, 1000, 1100, 1200, 1300, 1400, 1500]
+
+
+class AdvancedMenuTest(unittest.TestCase):
+    def setUp(self):
+        for name, value in (('governors', GOVERNORS), ('frequencies_mhz', FREQS)):
+            patcher = unittest.mock.patch.object(lcd_menu.cpu_power, name,
+                                                 return_value=list(value))
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def advanced_page(self):
+        for item in build_main_menu().items:
+            if item.label == 'Advanced':
+                return item.activate(CTX_MATRIX['menu']).page
+        self.fail('No Advanced entry on the main menu')
+
+    def items(self):
+        return {item.label: item for item in self.advanced_page().items}
+
+    def cpu_ctx(self, **settings):
+        return Ctx(status=dict(MENU_STATUS), settings=dict(SETTINGS, **settings),
+                   now=100.0, cpu=dict(CPU_PI4))
+
+    def test_rows_read_n_a_and_do_nothing_without_cpufreq(self):
+        for label in ('Gov', 'Max MHz'):
+            with self.subTest(label=label):
+                item = self.items()[label]
+                self.assertEqual(item.value_text(CTX_MATRIX['menu']), 'n/a')
+                self.assertIsNone(item.activate(CTX_MATRIX['menu']))
+
+    def test_rows_show_the_saved_setting(self):
+        items = self.items()
+        self.assertEqual(items['Gov'].value_text(self.cpu_ctx()), 'Default')
+        self.assertEqual(items['Max MHz'].value_text(self.cpu_ctx()), 'No cap')
+        context = self.cpu_ctx(cpu_governor='powersave', cpu_max_mhz=1200)
+        self.assertEqual(items['Gov'].value_text(context), 'powersave')
+        self.assertEqual(items['Max MHz'].value_text(context), '1200')
+
+    def test_choosing_a_governor_saves_it_through_piparty(self):
+        context = self.cpu_ctx()
+        page = self.items()['Gov'].activate(context).page
+        page.on_enter(context)
+        self.assertEqual(page.render(context)[1], '>*Default')
+        page.index = 1 + GOVERNORS.index('powersave')
+        self.assertEqual(actions(page.on_button(SELECT, context)),
+                         [SetSetting('cpu_governor', 'powersave'), Pop()])
+
+    def test_governor_choices_are_default_then_what_the_kernel_offers(self):
+        context = self.cpu_ctx()
+        page = self.items()['Gov'].activate(context).page
+        self.assertEqual([item.value for item in page.items],
+                         ['auto'] + GOVERNORS)
+
+    def test_clock_list_is_fastest_first_and_opens_on_the_saved_cap(self):
+        context = self.cpu_ctx(cpu_max_mhz=1200)
+        page = self.items()['Max MHz'].activate(context).page
+        page.on_enter(context)
+        self.assertEqual([item.value for item in page.items][:3], [0, 1500, 1400])
+        self.assertEqual(page.render(context)[1], '>*1200 MHz')
+        self.assertEqual(actions(page.on_button(SELECT, context)),
+                         [SetSetting('cpu_max_mhz', 1200), Pop()])
+
+    def test_cpu_now_page(self):
+        page = self.items()['CPU now'].activate(CTX_MATRIX['menu']).page
+        self.assertEqual(page.render(self.cpu_ctx()),
+                         ('600/1500MHz  48C', 'Gov ondemand'))
+        self.assertEqual(page.render(CTX_MATRIX['menu']), ('CPU scaling', 'n/a'))
+
+    def test_every_row_fits_the_panel(self):
+        page = self.advanced_page()
+        for governor in ['auto'] + GOVERNORS:
+            context = self.cpu_ctx(cpu_governor=governor, cpu_max_mhz=1500)
+            for index in range(len(page.items)):
+                page.index = index
+                with self.subTest(governor=governor, index=index):
+                    top, bottom = page.render(context)
+                    self.assertLessEqual(len(top), COLS)
+                    # Clipping would eat the value; it must fit outright.
+                    self.assertLessEqual(len(bottom), COLS)
+                    self.assertIn(page.items[index].value_text(context), bottom)
+        wide = dict(CPU_PI4, governor='conservative', cur_mhz=1500, temp_c=85.0)
+        for line in CpuStatusPageRender.render(wide):
+            self.assertLessEqual(len(line), COLS)
+
+
+class CpuStatusPageRender:
+    @staticmethod
+    def render(cpu):
+        return lcd_menu.CpuStatusPage().render(
+            Ctx(status={}, settings={}, now=0.0, cpu=cpu))
+
+
+class CpuPollTest(unittest.TestCase):
+    def test_polls_at_most_once_a_second_and_lands_in_ctx(self):
+        app = LcdApp(FakeQueue(), FakeNs(), FakeLcd(), None)
+        with unittest.mock.patch.object(lcd_menu.cpu_power, 'status',
+                                        return_value=dict(CPU_PI4)) as status:
+            app.poll_cpu(10.0)
+            app.poll_cpu(10.5)
+            app.poll_cpu(11.0)
+        self.assertEqual(status.call_count, 2)
+        self.assertEqual(app.build_ctx(11.0).cpu, CPU_PI4)
+
+    def test_a_failed_read_clears_rather_than_crashes(self):
+        app = LcdApp(FakeQueue(), FakeNs(), FakeLcd(), None)
+        with unittest.mock.patch.object(lcd_menu.cpu_power, 'status',
+                                        side_effect=OSError('gone')):
+            app.poll_cpu(10.0)
+        self.assertEqual(app.build_ctx(10.0).cpu, {})

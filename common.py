@@ -161,6 +161,9 @@ REQUIRED_SETTINGS = [
     'force_all_start',
     # Output volume, applied at the ALSA mixer (see audio_mixer.py)
     'audio_volume',
+    # CPU governor and clock cap, applied via cpufreq (see cpu_power.py)
+    'cpu_governor',
+    'cpu_max_mhz',
     # LCD KeyPad HAT (DFR0514)
     'lcd_enabled',
     'lcd_brightness',

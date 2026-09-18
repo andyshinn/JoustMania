@@ -66,6 +66,7 @@ import controller_process
 import update
 import lcd_menu
 import audio_mixer
+import cpu_power
 import network_manager
 import system_power
 
@@ -964,6 +965,9 @@ class Menu():
             'current_game': Games.JoustFFA.name,
             'play_audio': True,
             'audio_volume': audio_mixer.DEFAULT_VOLUME,
+            # 'auto' and 0 leave the kernel's own cpufreq settings alone.
+            'cpu_governor': cpu_power.AUTO_GOVERNOR,
+            'cpu_max_mhz': cpu_power.NO_CAP,
             'menu_voice': 'ivy',
             'move_can_be_admin': True,
             'enforce_minimum': True,
@@ -1042,6 +1046,8 @@ class Menu():
         # to be pushed at it here or the first game plays at whatever ALSA
         # happened to be left on.
         audio_mixer.apply(temp_settings)
+        # Same for cpufreq, which resets to the kernel's defaults on boot.
+        cpu_power.apply(temp_settings)
 
     def update_settings_file(self):
         with open(common.SETTINGSFILE,'w') as yaml_file:
@@ -1061,6 +1067,8 @@ class Menu():
         self.update_settings_file()
         if key == 'audio_volume':
             audio_mixer.set_volume(val)
+        elif key in cpu_power.SETTING_KEYS:
+            cpu_power.apply(temp_settings)
 
 
     def check_command_queue(self):
